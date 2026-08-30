@@ -65,6 +65,11 @@ func TestMain(m *testing.M) {
 	witness.CaptureLogger()
 
 	stop := make(chan struct{})
+	var arenas sync.WaitGroup
+	for range envInt("PTAH_2365_ARENAS", 2) {
+		arenas.Add(1)
+		go arenaChurn(stop, &arenas)
+	}
 	go func() {
 		for {
 			select {
@@ -80,6 +85,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	close(stop)
+	arenas.Wait()
 
 	if witness.StaleSeen.Load() == 0 {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")

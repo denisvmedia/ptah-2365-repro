@@ -27,6 +27,10 @@ on:
         description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
         default: 'all'
+      shard_list:
+        description: 'JSON array of shard ids; one parallel job per entry, per arm. The fault is rare, so width beats patience.'
+        required: false
+        default: '["1","2","3","4","5","6","7","8","9","10"]'
   schedule:
     # 04:20 UTC. The fault is rare, so the record is built by accumulating runs.
     - cron: '20 4 * * *'
@@ -37,8 +41,12 @@ permissions:
 jobs:
   candidate:
     if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate' }}
-    name: candidate (harness, with modernc.org/sqlite)
+    name: candidate (harness, with modernc.org/sqlite) [${{ matrix.shard }}]
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
     timeout-minutes: 350
     steps:
       # Git on Windows rewrites LF to CRLF by default and this repository
@@ -68,7 +76,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-probe
+          name: candidate-probe-${{ matrix.shard }}
           path: |
             probe-*.log
             smoke.log
@@ -78,8 +86,12 @@ jobs:
 
   candidate-min:
     if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate-min' }}
-    name: candidate-min (standard library only)
+    name: candidate-min (standard library only) [${{ matrix.shard }}]
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
     timeout-minutes: 350
     steps:
       - name: Keep the line endings the repository stores
@@ -107,7 +119,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-min-probe
+          name: candidate-min-probe-${{ matrix.shard }}
           path: |
             probe-*.log
             smoke.log
@@ -117,8 +129,12 @@ jobs:
 
   control:
     if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'control' }}
-    name: control (the package the fault was seen in)
+    name: control (the package the fault was seen in) [${{ matrix.shard }}]
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
     timeout-minutes: 350
     steps:
       - name: Keep the line endings the repository stores
@@ -156,7 +172,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: control-probe
+          name: control-probe-${{ matrix.shard }}
           path: |
             probe-*.log
             verdict.txt
