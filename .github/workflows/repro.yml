@@ -1,395 +1,120 @@
-# Try to make the windows/amd64 heap fault happen on purpose, in as little code
-# as possible.
-#
-# The candidate is this repository's harness. The control runs the real package
-# the fault was observed in, on the same runner, in the same job matrix. The
-# control is what makes a clean candidate mean anything: without it, "the
-# harness did not reproduce" and "this runner does not reproduce today" look
-# identical, and the whole point of the exercise is to tell those apart.
-name: repro
+# Stock Go runtime with only the golang/go#80799 crash-report repair.
+name: reproduce Windows runtime corruption
 
 on:
   workflow_dispatch:
-    inputs:
-      iterations:
-        description: 'Iterations per arm'
-        required: false
-        default: '80'
-      workers:
-        description: 'Parallel workers inside one candidate iteration'
-        required: false
-        default: '32'
-      rounds:
-        description: 'Databases per worker'
-        required: false
-        default: '16'
-      arms:
-        description: 'Which arms to run: all | candidate | candidate-min | control'
-        required: false
-        default: 'all'
-      rebuild_each_iteration:
-        description: 'Rebuild the test binary before every iteration (true/false). Reproductions cluster on the first run after a build.'
-        required: false
-        default: 'false'
-      go_experiment:
-        description: 'GOEXPERIMENT for the arm, e.g. nogreenteagc to make the zombie report name the object'
-        required: false
-        default: ''
-      godebug:
-        description: 'Extra GODEBUG settings, e.g. gccheckmark=1 to fail at the bad mark instead of at the next sweep'
-        required: false
-        default: ''
-      patch_zombie_report:
-        description: 'Apply the golang/go#80799 fix as a build overlay, so a reproduction under the DEFAULT collector names the object and dumps its bytes. Prefer this to nogreenteagc, which removes the fault instead of reporting it.'
-        required: false
-        default: 'false'
-      paired_doublecheck:
-        description: 'For shards whose id starts with B, also enable the collector Green Tea consistency asserts. moveInlineMarks requires a scannable span inline marks to equal its inline scans, which separates a mark cleared from outside (the arrays diverge) from a mark the collector never set (they agree).'
-        required: false
-        default: 'false'
-      build_flags:
-        description: 'Extra space-separated arguments for `go test -c`, e.g. -race. The runtime names -race and -d=checkptr in the abort text itself, and the job that fails upstream passes neither.'
-        required: false
-        default: ''
-      paired_godebug:
-        description: 'GODEBUG for shards whose id starts with B. Pairs an A/B inside ONE run, so both conditions meet the same fleet at the same time; comparing separate runs cannot tell a real difference from a quiet hour.'
-        required: false
-        default: ''
-      paired_go_experiment:
-        description: 'GOEXPERIMENT for shards whose id starts with B, same pairing rule.'
-        required: false
-        default: ''
-      filter_file:
-        description: 'A file of test names (one per line) for the control arm, e.g. filters/nosqlite.txt'
-        required: false
-        default: ''
-      test_filter:
-        description: 'A -test.run pattern for the control arm, for bisecting the package down to a minimal set'
-        required: false
-        default: ''
-      shard_list:
-        description: 'JSON array of shard ids; one parallel job per entry, per arm. The fault is rare, so width beats patience.'
-        required: false
-        default: '["1","2","3","4","5","6","7","8","9","10"]'
-  schedule:
-    # 04:20 UTC. The fault is rare, so the record is built by accumulating runs.
-    - cron: '20 4 * * *'
 
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+  GOENV: 'off'
+  GOEXPERIMENT: ''
+  GOFLAGS: ''
+  GODEBUG: ''
+
 jobs:
-  candidate:
-    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate' }}
-    name: candidate (harness, with modernc.org/sqlite) [${{ matrix.shard }}]
+  smoke:
+    name: ${{ matrix.shard }}
     runs-on: windows-latest
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
-    timeout-minutes: 350
+        shard: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40']
+
     steps:
-      # Git on Windows rewrites LF to CRLF by default and this repository
-      # stores LF.
-      - name: Keep the line endings the repository stores
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@v4
-
-      # Same reasoning as the control job: setup-go installs the `go` directive
-      # and the `toolchain` line then fetches another version into GOMODCACHE,
-      # where `go` refuses an overlay. Install the toolchain version and pin it.
-      - name: Read the toolchain this module declares
-        id: toolchain
-        shell: pwsh
-        run: |
-          $line = Select-String -Path go.mod -Pattern '^toolchain go(.+)$'
-          if (-not $line) { throw 'go.mod declares no toolchain line' }
-          $v = $line.Matches[0].Groups[1].Value.Trim()
-          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
-          Write-Host "toolchain: $v"
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
         with:
-          go-version: ${{ steps.toolchain.outputs.version }}
-          cache: true
+          persist-credentials: false
 
-      - run: go mod download
-
-      - name: Probe
-        shell: pwsh
-        env:
-          ITERATIONS: ${{ inputs.iterations || '80' }}
-          PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
-          PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
-          GOGC: '1'
-          GOEXPERIMENT: ${{ inputs.go_experiment }}
-          PROBE_GODEBUG: ${{ inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind candidate ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
-
-      - name: Keep what the probe saw
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-probe-${{ matrix.shard }}
-          path: |
-            probe-*.log
-            smoke.log
-            verdict.txt
-            condition.txt
-          if-no-files-found: warn
-          retention-days: 30
-
-  candidate-min:
-    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate-min' }}
-    name: candidate-min (standard library only) [${{ matrix.shard }}]
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
-    timeout-minutes: 350
-    steps:
-      - name: Keep the line endings the repository stores
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@v4
-
-      # Same reasoning as the control job: setup-go installs the `go` directive
-      # and the `toolchain` line then fetches another version into GOMODCACHE,
-      # where `go` refuses an overlay. Install the toolchain version and pin it.
-      - name: Read the toolchain this module declares
-        id: toolchain
-        shell: pwsh
-        run: |
-          $line = Select-String -Path go.mod -Pattern '^toolchain go(.+)$'
-          if (-not $line) { throw 'go.mod declares no toolchain line' }
-          $v = $line.Matches[0].Groups[1].Value.Trim()
-          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
-          Write-Host "toolchain: $v"
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ steps.toolchain.outputs.version }}
-          cache: true
-
-      - run: go mod download
-
-      # A reproduction here must not land in the same empty report every control
-      # one did, so the candidate carries the instrument too.
-      # The asserts catch the precursor: the control's B arm trips
-      # marks-don't-match-scans a cycle before the same event would surface as a
-      # zombie, and at the same rate. A candidate measured only by the zombie
-      # signature is asking for the whole cascade; this asks for the first step.
-      - name: Make the zombie report name the object
-        if: ${{ inputs.patch_zombie_report == 'true' }}
-        shell: pwsh
-        env:
-          DOUBLECHECK: ${{ startsWith(matrix.shard, 'B') && inputs.paired_doublecheck == 'true' }}
-        run: |
-          $patchArgs = @('-out', $env:GITHUB_WORKSPACE)
-          if ($env:DOUBLECHECK -eq 'true') { $patchArgs += '-doublecheck' }
-          $overlay = go run ./cmd/patchreport @patchArgs
-          if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
-          "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
-          Write-Host "overlay: $overlay (doublecheck: $env:DOUBLECHECK)"
-
-      - name: Prove the overlay took effect
-        if: ${{ inputs.patch_zombie_report == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $text = & go run "-overlay=$env:PROBE_OVERLAY" ./zombiereport/cmd/makezombie 2>&1 | Out-String
-          if ($text -match 'no abort') {
-            throw 'makezombie exited cleanly, so nothing was verified'
-          }
-          if ($text -notmatch 'zombie') {
-            Write-Host $text
-            throw 'the overlay did not take effect: the report named no object'
-          }
-          Write-Host 'overlay verified: the report names the object'
-          exit 0
-
-      - name: Probe
-        shell: pwsh
-        env:
-          ITERATIONS: ${{ inputs.iterations || '80' }}
-          PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
-          PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
-          GOGC: '1'
-          GOEXPERIMENT: ${{ inputs.go_experiment }}
-          PROBE_GODEBUG: ${{ inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind candidate-min ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
-
-      - name: Keep what the probe saw
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-min-probe-${{ matrix.shard }}
-          path: |
-            probe-*.log
-            smoke.log
-            verdict.txt
-            condition.txt
-          if-no-files-found: warn
-          retention-days: 30
-
-  control:
-    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'control' }}
-    name: control (the package the fault was seen in) [${{ matrix.shard }}]
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
-    timeout-minutes: 350
-    env:
-      GOTOOLCHAIN: local
-    steps:
-      - name: Keep the line endings the repository stores
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@v4
-
-      # A commit whose CI run aborted, so the control is anchored to a known
-      # occurrence rather than to whatever master happens to be.
-      - name: Check out the package the fault was observed in
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: stokaro/ptah
           ref: 9278f8566c88c3bf949bd3c5cd22fad1d37006b4
           path: upstream
+          persist-credentials: false
 
-      # setup-go reads the `go` directive from go.mod, not the `toolchain` one,
-      # so it installs 1.26.5 and the toolchain line then makes the go command
-      # fetch 1.27.0 into GOMODCACHE as a module. That is invisible until an
-      # overlay is asked for: `go` refuses to replace a file beneath GOMODCACHE,
-      # and the whole instrument is unusable. Install the toolchain version
-      # itself and pin GOTOOLCHAIN=local so no switch happens, which leaves
-      # GOROOT an ordinary directory that an overlay may name.
-      #
-      # The version is read out of the checkout rather than written here, so the
-      # job follows whatever the measured commit declares.
-      - name: Read the toolchain the measured commit declares
-        id: toolchain
-        shell: pwsh
-        run: |
-          $line = Select-String -Path upstream/go.mod -Pattern '^toolchain go(.+)$'
-          if (-not $line) { throw 'upstream/go.mod declares no toolchain line' }
-          $v = $line.Matches[0].Groups[1].Value.Trim()
-          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
-          Write-Host "toolchain: $v"
-
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: ${{ steps.toolchain.outputs.version }}
-          cache: true
-          cache-dependency-path: upstream/go.sum
+          go-version: '1.27.0'
+          cache: false
 
-      - name: Fail if the go command would switch toolchains anyway
+      - name: Build and run once
         shell: pwsh
         run: |
-          $root = (go env GOROOT)
-          Write-Host "GOROOT: $root"
-          if ($root -like "*$(go env GOMODCACHE)*") {
-            throw "GOROOT is under GOMODCACHE ($root); an overlay cannot name it"
-          }
-
-      - name: Install dependencies
-        working-directory: upstream
-        run: go mod download
-
-      # An absolute -out: probe.ps1 pushes into upstream/ before `go test -c`,
-      # so a relative overlay path would be resolved against the wrong
-      # directory and the build would silently use an unpatched runtime.
-      - name: Make the zombie report name the object
-        if: ${{ inputs.patch_zombie_report == 'true' }}
-        shell: pwsh
-        env:
-          DOUBLECHECK: ${{ startsWith(matrix.shard, 'B') && inputs.paired_doublecheck == 'true' }}
-        run: |
-          # Not $args: that is a PowerShell automatic variable, and assigning
-          # to it is a quiet way to get an argument list that is not the one
-          # written here.
-          $patchArgs = @('-out', $env:GITHUB_WORKSPACE)
-          if ($env:DOUBLECHECK -eq 'true') { $patchArgs += '-doublecheck' }
-          $overlay = go run ./cmd/patchreport @patchArgs
-          if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
-          "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
-          "PROBE_DOUBLECHECK=$env:DOUBLECHECK" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
-          Write-Host "overlay: $overlay (doublecheck: $env:DOUBLECHECK)"
-
-      # An overlay whose key names a file the build never reads is not an
-      # error -- it is silently unused. The build would then succeed, the log
-      # would still print an overlay path, and a reproduction would come back
-      # with the same empty report the overlay exists to repair.
-      #
-      # So prove it on this machine, before measuring: makezombie builds a
-      # zombie on purpose, and only a patched runtime names it.
-      - name: Prove the overlay took effect
-        if: ${{ inputs.patch_zombie_report == 'true' }}
-        shell: pwsh
-        run: |
+          Set-StrictMode -Version Latest
           $ErrorActionPreference = 'Continue'
-          $text = & go run "-overlay=$env:PROBE_OVERLAY" ./zombiereport/cmd/makezombie 2>&1 | Out-String
-          if ($text -match 'no abort') {
-            throw 'makezombie exited cleanly, so nothing was verified'
+          $PSNativeCommandArgumentPassing = 'Standard'
+          $artifact = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          New-Item -ItemType Directory -Force -Path $artifact -ErrorAction Stop | Out-Null
+          'REFUSED: measurement did not complete' | Set-Content "$artifact\verdict.txt"
+
+          $overlayDir = Join-Path $env:RUNNER_TEMP "ptah-2365-${{ matrix.shard }}"
+          $patchArgs = @('./repro.go', '-out', $overlayDir)
+          $patchOutput = @(& go run @patchArgs 2>&1)
+          $patchStatus = $LASTEXITCODE
+          if ($patchStatus -ne 0) {
+            $patchOutput | ForEach-Object { Write-Host $_ }
+            throw "overlay generation failed with exit $patchStatus"
           }
-          if ($text -notmatch 'zombie') {
-            Write-Host $text
-            throw 'the overlay did not take effect: the report named no object'
+          $overlayPaths = @($patchOutput | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -match 'overlay\.json$' })
+          if ($overlayPaths.Count -ne 1) {
+            throw "overlay generator returned $($overlayPaths.Count) paths"
           }
-          Write-Host 'overlay verified: the report names the object'
-          # makezombie aborts on purpose, so go run leaves $LASTEXITCODE at 2,
-          # and the pwsh wrapper GitHub adds ends the step with it. The check
-          # above already decides this step: say so, or a passing proof fails
-          # the job and the instrument looks broken when it is working.
-          exit 0
+          $overlay = [IO.Path]::GetFullPath($overlayPaths[0])
 
-      - name: Probe
-        shell: pwsh
-        env:
-          ITERATIONS: ${{ inputs.iterations || '80' }}
-          GOGC: '1'
-          GOEXPERIMENT: ${{ startsWith(matrix.shard, 'B') && inputs.paired_go_experiment || inputs.go_experiment }}
-          PROBE_GODEBUG: ${{ startsWith(matrix.shard, 'B') && inputs.paired_godebug || inputs.godebug }}
-          BUILD_FLAGS: ${{ inputs.build_flags }}
-        run: |
-          $flags = @()
-          if ($env:BUILD_FLAGS) { $flags += $env:BUILD_FLAGS.Split(' ', [StringSplitOptions]::RemoveEmptyEntries) }
-          if ($env:PROBE_OVERLAY) { $flags += "-overlay=$env:PROBE_OVERLAY" }
-          Write-Host "build flags: $($flags -join ' ')"
-          ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' -BuildFlags $flags ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
+          $proofOutput = @(& go run "-overlay=$overlay" ./repro.go -zombie 2>&1)
+          $proofStatus = $LASTEXITCODE
+          $proofText = $proofOutput -join [Environment]::NewLine
+          if ($proofStatus -eq 0 -or
+              $proofText -notmatch 'fatal error: found pointer to free object' -or
+              $proofText -notmatch '(?m)^0x[0-9a-f]+ .*zombie') {
+            $proofOutput | ForEach-Object { Write-Host $_ }
+            throw 'golang/go#80799 report repair was not proven'
+          }
 
-      # The shard name says which arm was intended. This says which one ran.
-      # They differ whenever an expression falls through, and a comparison that
-      # trusts the name would silently score those jobs under the wrong arm.
-      - name: Write down the condition that actually applied
+          $binary = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP "ptah-${{ matrix.shard }}.test.exe"))
+          $buildArgs = @('test', '-c', "-overlay=$overlay", '-o', $binary, './migration/migrator')
+          Push-Location upstream
+          $buildOutput = @(& go @buildArgs 2>&1)
+          $buildStatus = $LASTEXITCODE
+          Pop-Location
+          if ($buildStatus -ne 0 -or -not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            $buildOutput | ForEach-Object { Write-Host $_ }
+            throw "Ptah build failed with exit $buildStatus"
+          }
+
+          $env:GOGC = '1'
+          $testArgs = @('-test.count=1', '-test.timeout=25m')
+          Push-Location 'upstream\migration\migrator'
+          $smokeOutput = @(& $binary @testArgs 2>&1)
+          $smokeStatus = $LASTEXITCODE
+          Pop-Location
+          $smokeText = $smokeOutput -join [Environment]::NewLine
+          $smokeOutput | Set-Content "$artifact\smoke.log"
+
+          $corruption = 'found pointer to free object|marked free object|found bad pointer in Go heap|found pointer to unallocated span|marks don''t match scans for span with pointer|unexpected fault address|Exception 0xc0000005|badPointer|invalid pointer found on stack'
+          if ($smokeText -match $corruption) {
+            "CORRUPTION: $($Matches[0])" | Set-Content "$artifact\verdict.txt"
+            Write-Host "::error::memory corruption reproduced: $($Matches[0])"
+            exit 1
+          }
+          $passes = ([regex]::Matches($smokeText, '(?m)^PASS\r?$')).Count
+          $failures = ([regex]::Matches($smokeText, '(?m)^(--- FAIL|FAIL)\b')).Count
+          if ($smokeStatus -ne 0 -or $passes -ne 1 -or $failures -ne 0) {
+            "REFUSED: exit=$smokeStatus PASS=$passes FAIL=$failures" | Set-Content "$artifact\verdict.txt"
+            Write-Host '::error::smoke result was neither clean nor recognized corruption'
+            exit 1
+          }
+          'PASS' | Set-Content "$artifact\verdict.txt"
+
+      - name: Upload evidence
         if: always()
-        shell: pwsh
-        env:
-          GOEXPERIMENT: ${{ startsWith(matrix.shard, 'B') && inputs.paired_go_experiment || inputs.go_experiment }}
-          PROBE_GODEBUG: ${{ startsWith(matrix.shard, 'B') && inputs.paired_godebug || inputs.godebug }}
-        run: |
-          $arm = if ('${{ matrix.shard }}'.StartsWith('B')) { 'B' } else { 'A' }
-          "shard=${{ matrix.shard }}"        | Out-File -Encoding utf8 condition.txt
-          "arm=$arm"                         | Out-File -Encoding utf8 -Append condition.txt
-          "goexperiment=$env:GOEXPERIMENT"   | Out-File -Encoding utf8 -Append condition.txt
-          "godebug=$env:PROBE_GODEBUG"       | Out-File -Encoding utf8 -Append condition.txt
-          "buildflags=${{ inputs.build_flags }}" | Out-File -Encoding utf8 -Append condition.txt
-          "overlay=$env:PROBE_OVERLAY"          | Out-File -Encoding utf8 -Append condition.txt
-          "doublecheck=$env:PROBE_DOUBLECHECK"   | Out-File -Encoding utf8 -Append condition.txt
-          Get-Content condition.txt
-
-      - name: Keep what the probe saw
-        if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: control-probe-${{ matrix.shard }}
-          path: |
-            probe-*.log
-            smoke.log
-            verdict.txt
-            condition.txt
-          if-no-files-found: warn
+          name: ptah-${{ matrix.shard }}
+          path: artifact
+          if-no-files-found: error
           retention-days: 30
