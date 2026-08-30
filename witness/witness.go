@@ -122,6 +122,15 @@ func CheckLogger() {
 	}
 }
 
+// Exposure is what an arm actually did to the collector. Comparing arms by
+// iteration count is misleading when one iteration is 14 seconds and another is
+// two minutes; comparing completed GC cycles is not.
+func Exposure() uint32 {
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	return ms.NumGC
+}
+
 // Report prints every goroutine and leaves with a distinctive status so the
 // workflow can tell a reproduction from an ordinary test failure.
 func Report(what string) {

@@ -36,8 +36,13 @@ const childEnv = "PTAH_2365_CHILD"
 
 var (
 	workers = envInt("PTAH_2365_WORKERS", 32)
-	rounds  = envInt("PTAH_2365_ROUNDS", 16)
+	rounds  = envInt("PTAH_2365_ROUNDS", 48)
 	writes  = envInt("PTAH_2365_INSERTS", 256)
+	// How many workers run the Go toolchain. The package the fault was seen in
+	// builds a helper in a handful of its tests, not in all of them, and a build
+	// per worker would dominate the iteration instead of being one ingredient
+	// among several.
+	builders = envInt("PTAH_2365_BUILDERS", 8)
 )
 
 func envInt(name string, def int) int {
@@ -80,8 +85,8 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")
 		os.Exit(2)
 	}
-	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes\n",
-		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load())
+	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes, %d gc cycles\n",
+		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load(), witness.Exposure())
 	os.Exit(code)
 }
 
@@ -90,6 +95,9 @@ func TestWorkload(t *testing.T) {
 		t.Run(fmt.Sprintf("worker-%02d", i), func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
+			if i%max(1, workers/builders) == 0 {
+				buildHelper(t, dir)
+			}
 			for round := range rounds {
 				exercise(t, filepath.Join(dir, fmt.Sprintf("r%02d.dat", round)), round)
 			}
@@ -135,6 +143,64 @@ func exercise(t *testing.T, path string, round int) {
 	slog.Info("All migrations applied successfully", "round", round)
 	runtime.GC()
 }
+
+// buildHelper runs the Go toolchain as a child process, which is what the
+// package the fault was seen in does in its crash tests: it builds a helper
+// binary per test. That is a far heavier child than re-executing this binary --
+// hundreds of files read and written, a linker, and on a hosted Windows runner
+// every one of those touched by real-time antivirus. Re-executing ourselves
+// does not resemble it, and the difference is exactly the kind of thing this
+// reduction is trying to find.
+func buildHelper(t *testing.T, dir string) {
+	t.Helper()
+	// Distinct paths: on windows the .exe suffix hides a collision here, and on
+	// every other platform the binary would land on top of its own source
+	// directory.
+	src := filepath.Join(dir, "helpersrc")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "main.go"), []byte(helperSource), 0o644); err != nil {
+		t.Fatalf("write helper: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "go.mod"), []byte("module helper\n\ngo 1.26\n"), 0o644); err != nil {
+		t.Fatalf("write helper go.mod: %v", err)
+	}
+	out := filepath.Join(dir, "helperbin"+exeSuffix())
+	cmd := exec.Command("go", "build", "-o", out, ".")
+	cmd.Dir = src
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("go build unavailable in this environment: %v: %s", err, b)
+	}
+	slog.Info("Applying migration", "version", 2, "description", "built helper")
+
+	run := exec.Command(out)
+	err := run.Run()
+	var exitErr *exec.ExitError
+	if err == nil {
+		t.Fatal("helper was expected to fail")
+	}
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("helper failed in an unexpected way: %v", err)
+	}
+	if got := exitErr.ExitCode(); got != 73 {
+		t.Fatalf("helper exit code = %d, want 73", got)
+	}
+}
+
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+const helperSource = `package main
+
+import "os"
+
+func main() { os.Exit(73) }
+`
 
 func spawnChild(t *testing.T) {
 	t.Helper()

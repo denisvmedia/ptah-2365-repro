@@ -72,16 +72,22 @@ func TestMain(m *testing.M) {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")
 		os.Exit(2)
 	}
-	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes\n",
-		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load())
+	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes, %d gc cycles\n",
+		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load(), witness.Exposure())
 	os.Exit(code)
 }
 
 // Scale knobs, so the workflow can widen the workload without a code change.
-// Defaults are sized for a few seconds per iteration on a hosted runner.
+//
+// The defaults are sized against the arm they are compared with: one run of the
+// package the fault was seen in takes 51-203s on a hosted runner, and at
+// ROUNDS=16 one iteration here took 14s. Counting iterations across arms of
+// such different weight would compare nothing, so the rounds are raised to put
+// an iteration in the same range. Each arm also prints its completed GC cycles,
+// which is the comparison that does not depend on wall time at all.
 var (
 	workers = envInt("PTAH_2365_WORKERS", 32)
-	rounds  = envInt("PTAH_2365_ROUNDS", 16)
+	rounds  = envInt("PTAH_2365_ROUNDS", 96)
 	inserts = envInt("PTAH_2365_INSERTS", 256)
 )
 
