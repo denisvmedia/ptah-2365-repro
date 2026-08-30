@@ -31,10 +31,22 @@ const (
 	marker = "func (s *mspan) reportZombies() {"
 	oldSt  = "mbits := s.markBitsForBase()"
 	newSt  = "mbits := markBits{&s.gcmarkBits.x, uint8(1), 0}"
+
+	// The collector's own consistency asserts, off by default. The one worth
+	// having here is in moveInlineMarks: for a scannable span it requires the
+	// inline marks to equal the inline scans, and that separates the two
+	// readings of a lost mark. A write from outside that clears a mark leaves
+	// the scan set, so the arrays diverge and this throws at the sweep that
+	// notices; a collector that simply never marked the object leaves both
+	// clear, so it stays silent and the zombie report is what speaks.
+	dcFile = "mgcmark_greenteagc.go"
+	dcOld  = "const doubleCheckGreenTea = false"
+	dcNew  = "const doubleCheckGreenTea = true"
 )
 
 func main() {
 	out := flag.String("out", ".", "directory to write the patched file and the overlay into")
+	doubleCheck := flag.Bool("doublecheck", false, "also enable the collector's Green Tea consistency asserts")
 	flag.Parse()
 
 	goroot, err := exec.Command("go", "env", "GOROOT").Output()
@@ -70,10 +82,28 @@ func main() {
 	if err := os.WriteFile(dst, []byte(patched), 0o644); err != nil {
 		fail("writing %s: %v", dst, err)
 	}
+	replace := map[string]string{src: dst}
+
+	if *doubleCheck {
+		dcSrc := filepath.Join(filepath.Dir(src), dcFile)
+		dcBody, err := os.ReadFile(dcSrc)
+		if err != nil {
+			fail("reading %s: %v", dcSrc, err)
+		}
+		if n := strings.Count(string(dcBody), dcOld); n != 1 {
+			fail("expected exactly one %q in %s, found %d", dcOld, dcSrc, n)
+		}
+		dcDst := filepath.Join(*out, "mgcmark_greenteagc_patched.go")
+		if err := os.WriteFile(dcDst, []byte(strings.Replace(string(dcBody), dcOld, dcNew, 1)), 0o644); err != nil {
+			fail("writing %s: %v", dcDst, err)
+		}
+		replace[dcSrc] = dcDst
+	}
+
 	overlay := filepath.Join(*out, "overlay.json")
 	blob, err := json.Marshal(struct {
 		Replace map[string]string
-	}{Replace: map[string]string{src: dst}})
+	}{Replace: replace})
 	if err != nil {
 		fail("encoding the overlay: %v", err)
 	}

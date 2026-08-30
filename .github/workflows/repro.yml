@@ -178,6 +178,8 @@ jobs:
       matrix:
         shard: ${{ fromJSON(inputs.shard_list || '["1","2","3","4","5","6","7","8","9","10"]') }}
     timeout-minutes: 350
+    env:
+      GOTOOLCHAIN: local
     steps:
       - name: Keep the line endings the repository stores
         run: git config --global core.autocrlf false
@@ -193,11 +195,40 @@ jobs:
           ref: 9278f8566c88c3bf949bd3c5cd22fad1d37006b4
           path: upstream
 
+      # setup-go reads the `go` directive from go.mod, not the `toolchain` one,
+      # so it installs 1.26.5 and the toolchain line then makes the go command
+      # fetch 1.27.0 into GOMODCACHE as a module. That is invisible until an
+      # overlay is asked for: `go` refuses to replace a file beneath GOMODCACHE,
+      # and the whole instrument is unusable. Install the toolchain version
+      # itself and pin GOTOOLCHAIN=local so no switch happens, which leaves
+      # GOROOT an ordinary directory that an overlay may name.
+      #
+      # The version is read out of the checkout rather than written here, so the
+      # job follows whatever the measured commit declares.
+      - name: Read the toolchain the measured commit declares
+        id: toolchain
+        shell: pwsh
+        run: |
+          $line = Select-String -Path upstream/go.mod -Pattern '^toolchain go(.+)$'
+          if (-not $line) { throw 'upstream/go.mod declares no toolchain line' }
+          $v = $line.Matches[0].Groups[1].Value.Trim()
+          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
+          Write-Host "toolchain: $v"
+
       - uses: actions/setup-go@v5
         with:
-          go-version-file: upstream/go.mod
+          go-version: ${{ steps.toolchain.outputs.version }}
           cache: true
           cache-dependency-path: upstream/go.sum
+
+      - name: Fail if the go command would switch toolchains anyway
+        shell: pwsh
+        run: |
+          $root = (go env GOROOT)
+          Write-Host "GOROOT: $root"
+          if ($root -like "*$(go env GOMODCACHE)*") {
+            throw "GOROOT is under GOMODCACHE ($root); an overlay cannot name it"
+          }
 
       - name: Install dependencies
         working-directory: upstream
