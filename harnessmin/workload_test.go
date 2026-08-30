@@ -32,7 +32,16 @@ import (
 	"github.com/denisvmedia/ptah-2365-repro/witness"
 )
 
-const childEnv = "PTAH_2365_CHILD"
+const (
+	childEnv = "PTAH_2365_CHILD"
+	// peerEnv marks a copy of this binary started by the parent to run
+	// alongside it. The fault is observed under `go test ./...`, where the
+	// machine is running one test binary per package at once -- several Go
+	// runtimes, each with its own heap and collector, competing for the same
+	// cores and the same antivirus. One process in isolation does not resemble
+	// that, and a peer must not start peers of its own.
+	peerEnv = "PTAH_2365_PEER"
+)
 
 var (
 	workers = envInt("PTAH_2365_WORKERS", 32)
@@ -64,6 +73,8 @@ func TestMain(m *testing.M) {
 	witness.InstallRoots()
 	witness.CaptureLogger()
 
+	peers := startPeers()
+
 	stop := make(chan struct{})
 	var arenas sync.WaitGroup
 	for range envInt("PTAH_2365_ARENAS", 2) {
@@ -87,6 +98,19 @@ func TestMain(m *testing.M) {
 	close(stop)
 	arenas.Wait()
 
+	// A peer that found the fault reports it in its own output and exits 97;
+	// say so here too, or the parent's clean summary would bury it.
+	for _, p := range peers {
+		if err := p.Wait(); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 97 {
+				fmt.Fprintln(os.Stderr, "PTAH-2365 REPRODUCED in a peer process; see its output above")
+				os.Exit(97)
+			}
+			fmt.Fprintf(os.Stderr, "peer exited unexpectedly: %v\n", err)
+		}
+	}
+
 	if witness.StaleSeen.Load() == 0 {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")
 		os.Exit(2)
@@ -94,6 +118,31 @@ func TestMain(m *testing.M) {
 	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes, %d gc cycles\n",
 		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load(), witness.Exposure())
 	os.Exit(code)
+}
+
+// startPeers runs additional copies of this binary concurrently, so the machine
+// carries several Go runtimes at once the way `go test ./...` makes it.
+func startPeers() []*exec.Cmd {
+	if os.Getenv(peerEnv) != "" {
+		return nil // a peer does not start peers
+	}
+	n := envInt("PTAH_2365_PEERS", 3)
+	exe, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	out := make([]*exec.Cmd, 0, n)
+	for range n {
+		cmd := exec.Command(exe, "-test.count=1", "-test.timeout=20m")
+		cmd.Env = append(os.Environ(), peerEnv+"=1")
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			continue
+		}
+		out = append(out, cmd)
+	}
+	return out
 }
 
 func TestWorkload(t *testing.T) {
