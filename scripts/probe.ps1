@@ -92,10 +92,23 @@ $signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHAN
 
 for ($i = 1; $i -le $iterations; $i++) {
   $log = Join-Path $root "probe-$i.log"
+
+  # Both reproductions so far landed on iteration 1 of 80. Under a uniform
+  # per-iteration rate that pair has probability (1/80)^2, so the first
+  # execution of a freshly written binary is where the fault concentrates --
+  # which is also the one moment a hosted runner's real-time antivirus opens the
+  # file to scan it, and the container that never reproduced in 3110 runs has no
+  # antivirus at all. So give every iteration its own freshly written image
+  # rather than re-running one file eighty times. Copying is far cheaper than
+  # rebuilding and produces the same thing: a path the scanner has not seen.
+  $iterBin = Join-Path $runDir "probe-iter-$i.exe"
+  Copy-Item -LiteralPath $bin -Destination $iterBin -Force
+
   Push-Location $runDir
-  & $bin @testArgs 2>&1 | Tee-Object -FilePath $log | Out-Null
+  & $iterBin @testArgs 2>&1 | Tee-Object -FilePath $log | Out-Null
   $status = $LASTEXITCODE
   Pop-Location
+  Remove-Item -LiteralPath $iterBin -Force -ErrorAction SilentlyContinue
   $ran++
 
   if (Select-String -Path $log -Pattern $signatures -Quiet) {
