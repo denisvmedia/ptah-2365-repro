@@ -27,6 +27,10 @@ on:
         description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
         default: 'all'
+      filter_file:
+        description: 'A file of test names (one per line) for the control arm, e.g. filters/nosqlite.txt'
+        required: false
+        default: ''
       test_filter:
         description: 'A -test.run pattern for the control arm, for bisecting the package down to a minimal set'
         required: false
@@ -170,7 +174,7 @@ jobs:
         env:
           ITERATIONS: ${{ inputs.iterations || '80' }}
           GOGC: '1'
-        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}'
+        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}'
 
       - name: Keep what the probe saw
         if: always()

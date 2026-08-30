@@ -9,7 +9,11 @@ param(
   # A -test.run pattern, so the control arm can be bisected: the fault
   # reproduces on the first iteration under GOGC=1, which makes halving the
   # package's test list a minutes-long question rather than a nightly one.
-  [string]$Filter = ''
+  [string]$Filter = '',
+  # A file of test names, one per line, turned into an anchored alternation.
+  # A -test.run listing 172 names is some 7 KB, which is more than a workflow
+  # input and PowerShell quoting should be asked to carry.
+  [string]$FilterFile = ''
 )
 
 # Continue, deliberately. Under Stop a native command's stderr merged with 2>&1
@@ -23,6 +27,22 @@ $ErrorActionPreference = 'Continue'
 # passing keeps PowerShell from re-quoting them on the way.
 $PSNativeCommandArgumentPassing = 'Standard'
 $testArgs = @('-test.count=1', '-test.timeout=25m')
+if ($FilterFile) {
+  $resolved = Join-Path $PWD $FilterFile
+  if (-not (Test-Path $resolved)) {
+    "refused: filter file $FilterFile not found" | Out-File verdict.txt
+    Write-Host "::error::filter file $FilterFile not found"
+    exit 1
+  }
+  $names = Get-Content $resolved | Where-Object { $_.Trim() -ne '' }
+  if ($names.Count -eq 0) {
+    "refused: filter file $FilterFile is empty" | Out-File verdict.txt
+    Write-Host "::error::filter file $FilterFile is empty"
+    exit 1
+  }
+  $Filter = '^(' + ($names -join '|') + ')$'
+  Write-Host "filter file $FilterFile selects $($names.Count) tests"
+}
 if ($Filter) { $testArgs += "-test.run=$Filter" }
 
 $iterations = if ($env:ITERATIONS) { [int]$env:ITERATIONS } else { 80 }
