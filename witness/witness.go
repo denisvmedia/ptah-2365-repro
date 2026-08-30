@@ -1,4 +1,4 @@
-// Package harness holds the candidate reduction of stokaro/ptah#2365 and the
+// Package witness holds the detectors shared by the candidate reductions of stokaro/ptah#2365 and the
 // detectors that decide whether a run reproduced it.
 //
 // Two detectors, because the defect has two observable halves and the sweeper's
@@ -21,7 +21,7 @@
 // that cleanups fire at all: a harness where AddCleanup never ran would report
 // exactly the same clean result while measuring nothing, so the harness refuses
 // that outcome rather than passing it off.
-package harness
+package witness
 
 import (
 	"fmt"

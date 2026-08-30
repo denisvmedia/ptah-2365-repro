@@ -5,13 +5,20 @@
 # this whole exercise exists to avoid: every abort in the field was invisible
 # for the same reason.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('candidate', 'control')][string]$Kind
+  [Parameter(Mandatory = $true)][ValidateSet('candidate', 'candidate-min', 'control')][string]$Kind
 )
 
 # Continue, deliberately. Under Stop a native command's stderr merged with 2>&1
 # arrives as ErrorRecords that end the script, so `go test` printing its first
 # diagnostic would look like the probe itself failing.
 $ErrorActionPreference = 'Continue'
+
+# PowerShell splits a native command's argument at the dot in `-test.count=1`
+# and the binary sees `-test`, which it rejects with its usage text and exit 2.
+# Splatting an array passes each element through verbatim, and Standard argument
+# passing keeps PowerShell from re-quoting them on the way.
+$PSNativeCommandArgumentPassing = 'Standard'
+$testArgs = @('-test.count=1', '-test.timeout=25m')
 
 $iterations = if ($env:ITERATIONS) { [int]$env:ITERATIONS } else { 80 }
 if ($iterations -lt 1) {
@@ -20,12 +27,10 @@ if ($iterations -lt 1) {
   exit 1
 }
 
-if ($Kind -eq 'candidate') {
-  $buildDir = '.'
-  $pkg = './harness/'
-} else {
-  $buildDir = 'upstream'
-  $pkg = './migration/migrator/'
+switch ($Kind) {
+  'candidate'     { $buildDir = '.';        $pkg = './harness/' }      # with modernc.org/sqlite
+  'candidate-min' { $buildDir = '.';        $pkg = './harnessmin/' }   # standard library only
+  'control'       { $buildDir = 'upstream'; $pkg = './migration/migrator/' }
 }
 
 Push-Location $buildDir
@@ -39,6 +44,19 @@ if ($LASTEXITCODE -ne 0) {
 $bin = "$PWD\probe.test.exe"
 Pop-Location
 
+# Smoke: one run before the loop, so a binary that cannot be invoked is
+# reported as that rather than as a strange first iteration. Every abort this
+# repository is chasing went unexplained because something reported without
+# running; the probe should not join them.
+& $bin @testArgs 2>&1 | Tee-Object -FilePath 'smoke.log' | Out-Null
+if (-not (Select-String -Path 'smoke.log' -Pattern '^(PASS|ok|FAIL|---)' -Quiet)) {
+  "refused: the test binary produced no test result when invoked" | Out-File verdict.txt
+  Write-Host "::error::the test binary produced no test result; see smoke.log"
+  Get-Content 'smoke.log' -Tail 20
+  exit 1
+}
+Remove-Item 'smoke.log' -ErrorAction SilentlyContinue
+
 Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC"
 
 $ran = 0
@@ -46,7 +64,7 @@ $signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHAN
 
 for ($i = 1; $i -le $iterations; $i++) {
   $log = "probe-$i.log"
-  & $bin -test.count=1 -test.timeout=25m 2>&1 | Tee-Object -FilePath $log | Out-Null
+  & $bin @testArgs 2>&1 | Tee-Object -FilePath $log | Out-Null
   $status = $LASTEXITCODE
   $ran++
 

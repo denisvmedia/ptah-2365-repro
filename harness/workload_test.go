@@ -35,7 +35,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/denisvmedia/ptah-2365-repro/harness"
+	"github.com/denisvmedia/ptah-2365-repro/witness"
 )
 
 // The child half: the test binary re-executes itself and the child dies, the
@@ -46,8 +46,8 @@ func TestMain(m *testing.M) {
 	if os.Getenv(childEnv) != "" {
 		os.Exit(73)
 	}
-	harness.InstallRoots()
-	harness.CaptureLogger()
+	witness.InstallRoots()
+	witness.CaptureLogger()
 
 	stop := make(chan struct{})
 	go func() {
@@ -57,8 +57,8 @@ func TestMain(m *testing.M) {
 				return
 			default:
 			}
-			harness.CheckLogger()
-			harness.Rotate(8)
+			witness.CheckLogger()
+			witness.Rotate(8)
 			time.Sleep(time.Millisecond)
 		}
 	}()
@@ -68,12 +68,12 @@ func TestMain(m *testing.M) {
 
 	// A clean run has to prove it looked. If no cleanup ever fired, AddCleanup
 	// measured nothing and "no reproduction" would be an empty statement.
-	if harness.StaleSeen.Load() == 0 {
+	if witness.StaleSeen.Load() == 0 {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")
 		os.Exit(2)
 	}
 	fmt.Fprintf(os.Stderr, "detector: %d superseded cleanups fired, %d live collected, %d handler-word changes\n",
-		harness.StaleSeen.Load(), harness.LiveCollected.Load(), harness.ShapeChanged.Load())
+		witness.StaleSeen.Load(), witness.LiveCollected.Load(), witness.ShapeChanged.Load())
 	os.Exit(code)
 }
 

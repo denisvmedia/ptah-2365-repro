@@ -24,9 +24,9 @@ on:
         required: false
         default: '16'
       arms:
-        description: 'Which arms to run: both | candidate | control'
+        description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
-        default: 'both'
+        default: 'all'
   schedule:
     # 04:20 UTC. The fault is rare, so the record is built by accumulating runs.
     - cron: '20 4 * * *'
@@ -36,8 +36,8 @@ permissions:
 
 jobs:
   candidate:
-    if: ${{ github.event_name == 'schedule' || inputs.arms == 'both' || inputs.arms == 'candidate' }}
-    name: candidate (minimal harness)
+    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate' }}
+    name: candidate (harness, with modernc.org/sqlite)
     runs-on: windows-latest
     timeout-minutes: 350
     steps:
@@ -71,12 +71,52 @@ jobs:
           name: candidate-probe
           path: |
             probe-*.log
+            smoke.log
+            verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  candidate-min:
+    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'candidate-min' }}
+    name: candidate-min (standard library only)
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Keep the line endings the repository stores
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go mod download
+
+      - name: Probe
+        shell: pwsh
+        env:
+          ITERATIONS: ${{ inputs.iterations || '80' }}
+          PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
+          PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
+          GOGC: '1'
+        run: ./scripts/probe.ps1 -Kind candidate-min
+
+      - name: Keep what the probe saw
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-min-probe
+          path: |
+            probe-*.log
+            smoke.log
             verdict.txt
           if-no-files-found: warn
           retention-days: 30
 
   control:
-    if: ${{ github.event_name == 'schedule' || inputs.arms == 'both' || inputs.arms == 'control' }}
+    if: ${{ github.event_name == 'schedule' || inputs.arms == 'all' || inputs.arms == 'control' }}
     name: control (the package the fault was seen in)
     runs-on: windows-latest
     timeout-minutes: 350

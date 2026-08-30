@@ -60,11 +60,19 @@ workflow does.
 
 ## Layout
 
-- `harness/` — the candidate. Keeps only the ingredients the field reports
-  share: `modernc.org/sqlite` opened and closed in a loop, logging through
+- `harness/` — the candidate that keeps `modernc.org/sqlite`. Keeps only the
+  ingredients the field reports share: `modernc.org/sqlite` opened and closed in a loop, logging through
   `slog.Default()` around every step, child processes, context cancellation
   across a query, parallel subtests, GC pressure.
-- `harness/witness.go` — two detectors. `runtime.AddCleanup` on 4096 rooted
+- `harnessmin/` — the same candidate with the dependency removed: **standard
+  library only**. Whether the C translation is a necessary ingredient cannot be
+  settled by reading — it is the one large body of unsafe in the affected
+  binary, but its arena sits ~26 TB from the Go heap on windows/amd64
+  (measured), 27 of 38 field aborts have no modernc goroutine live, and an
+  audit of its allocator with ownership invariants came back clean. So both are
+  run and the difference is the answer. A reproduction here needs no
+  third-party module at all, which is what the Go tracker wants.
+- `witness/witness.go` — two detectors. `runtime.AddCleanup` on 4096 rooted
   16-byte two-pointer objects with generation tags, so a cleanup firing for the
   generation a root still holds is a collected live object; and a check that
   `slog.Default()`'s first word is still the `*itab` it was built with.
@@ -87,7 +95,7 @@ like a probe that found nothing.
 ## Running it
 
 ```
-gh workflow run repro.yml -f iterations=80 -f arms=both
+gh workflow run repro.yml -f iterations=80 -f arms=all
 ```
 
 Roughly 80 iterations per arm gives a 78% chance of catching one occurrence if
