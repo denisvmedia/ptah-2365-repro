@@ -23,6 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // begun counts transactions that actually started. A fake driver that refused
@@ -51,6 +52,15 @@ func sqlChurn(ctx context.Context, workers, txns int) {
 		go func(w int) {
 			defer wg.Done()
 			for i := range txns {
+				// A deadline rather than a count alone. The workload this
+				// imitates runs for about two minutes and aborts 70% of the
+				// way through, which under GOGC=1 is hundreds of collections
+				// with a heap that keeps growing. A harness that finishes in
+				// under a second never enters that regime, so the count is a
+				// ceiling and the clock is what actually ends the run.
+				if ctx.Err() != nil {
+					return
+				}
 				runOneTx(ctx, db, i)
 			}
 		}(w)
@@ -112,12 +122,13 @@ func TestSQLChurn(t *testing.T) {
 	t.Parallel()
 
 	workers := envInt("PTAH_2365_SQL_WORKERS", 24)
-	txns := envInt("PTAH_2365_SQL_TXNS", 200)
-	if workers == 0 || txns == 0 {
+	txns := envInt("PTAH_2365_SQL_TXNS", 2000000)
+	seconds := envInt("PTAH_2365_SQL_SECONDS", 45)
+	if workers == 0 || txns == 0 || seconds == 0 {
 		t.Skip("sql churn disabled")
 	}
 
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithTimeout(t.Context(), time.Duration(seconds)*time.Second)
 	defer cancel()
 
 	before := begun.Load()
@@ -127,5 +138,5 @@ func TestSQLChurn(t *testing.T) {
 	if started == 0 {
 		t.Fatal("no transaction was begun, so none of the named objects were allocated")
 	}
-	t.Logf("transactions begun: %d of %d attempted", started, workers*txns)
+	t.Logf("transactions begun: %d over %ds with %d workers", started, seconds, workers)
 }
