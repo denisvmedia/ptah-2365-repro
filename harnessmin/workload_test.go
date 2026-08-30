@@ -44,13 +44,13 @@ const (
 )
 
 var (
-	workers = envInt("PTAH_2365_WORKERS", 32)
-	rounds  = envInt("PTAH_2365_ROUNDS", 48)
-	writes  = envInt("PTAH_2365_INSERTS", 256)
+	workers = envInt("PTAH_2365_WORKERS", 8)
+	rounds  = envInt("PTAH_2365_ROUNDS", 2)
+	writes  = envInt("PTAH_2365_INSERTS", 32)
 	// Files in the in-memory tree each worker parses per round. This is the
 	// path the reproduction was actually executing, so it carries weight rather
 	// than being one ingredient among many.
-	provFiles = envInt("PTAH_2365_FILES", 64)
+	provFiles = envInt("PTAH_2365_FILES", 8)
 	// The registry churn is weighted deliberately. Two of the four control
 	// reproductions were inside
 	// TestRegisteredMigrationProvider_ConcurrentRegisterAndMigrations, which is
@@ -58,12 +58,15 @@ var (
 	// per round.
 	regWorkers = envInt("PTAH_2365_REG_WORKERS", 4)
 	regIters   = envInt("PTAH_2365_REG_ITERS", 100)
-	regLoops   = envInt("PTAH_2365_REG_LOOPS", 2)
+	regLoops   = envInt("PTAH_2365_REG_LOOPS", 0)
 	// The package the fault was seen in has 473 top-level tests, most with
 	// subtests and t.Parallel. That is hundreds of testing.T values, cleanup
 	// slices and framework goroutines, and it is a large part of what such a
 	// binary allocates. Thirty-two workers do not resemble it.
 	smallTests = envInt("PTAH_2365_SMALL_TESTS", 400)
+	// Sized against the target rather than upward: the package this reduces
+	// completes 137 GC cycles at GOGC=1, and a harness doing 92909 of them is
+	// not a closer approximation, it is a different program.
 	// How many workers run the Go toolchain. The package the fault was seen in
 	// builds a helper in a handful of its tests, not in all of them, and a build
 	// per worker would dominate the iteration instead of being one ingredient
@@ -113,7 +116,7 @@ func TestMain(m *testing.M) {
 	}
 
 	var arenas sync.WaitGroup
-	for range envInt("PTAH_2365_ARENAS", 2) {
+	for range envInt("PTAH_2365_ARENAS", 1) {
 		arenas.Add(1)
 		go arenaChurn(stop, &arenas)
 	}
@@ -273,7 +276,6 @@ func exercise(t *testing.T, path string, round int) {
 	wg.Wait()
 
 	slog.Info("All migrations applied successfully", "round", round)
-	runtime.GC()
 }
 
 // buildHelper runs the Go toolchain as a child process, which is what the

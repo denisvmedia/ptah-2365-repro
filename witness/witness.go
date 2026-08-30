@@ -32,7 +32,11 @@ import (
 	"unsafe"
 )
 
-const roots = 4096
+// The population is small on purpose. The package this reduces has a live heap
+// of 2-4 MB, and an earlier version of this witness held 4 MiB of canary plus
+// 4096 rooted objects -- more than the entire heap of the thing being measured.
+// An instrument that outweighs its subject is measuring itself.
+const roots = 256
 
 type victim struct { // 16 bytes: two pointer words, the shape of slog.Logger
 	a *int
