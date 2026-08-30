@@ -91,6 +91,12 @@ Pop-Location
 # running; the probe should not join them.
 $signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHANGED|found pointer to free object|marked free object|unexpected fault address|Exception 0xc0000005|fatal error:'
 
+# GODEBUG must be in force before the FIRST execution, because that is where
+# the reproductions land: an ap-arm smoke run without asyncpreemptoff nearly
+# retired a live hypothesis as refuted.
+if ($env:PROBE_GODEBUG) { $env:GODEBUG = $env:PROBE_GODEBUG }
+Write-Host "effective GODEBUG for every execution including the smoke: '$env:GODEBUG'"
+
 $smoke = Join-Path $root 'smoke.log'
 Push-Location $runDir
 & $bin @testArgs 2>&1 | Tee-Object -FilePath $smoke | Out-Null
@@ -126,10 +132,6 @@ if ($smokeStatus -ne 0) {
   exit 1
 }
 Remove-Item $smoke -ErrorAction SilentlyContinue
-
-# GODEBUG is set here rather than in the workflow so the value the run actually
-# had is printed beside the rest of its configuration.
-if ($env:PROBE_GODEBUG) { $env:GODEBUG = $env:PROBE_GODEBUG }
 
 Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC, GOEXPERIMENT=$env:GOEXPERIMENT, GODEBUG=$env:GODEBUG, filter=$Filter"
 
