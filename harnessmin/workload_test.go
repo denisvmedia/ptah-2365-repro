@@ -59,6 +59,11 @@ var (
 	regWorkers = envInt("PTAH_2365_REG_WORKERS", 4)
 	regIters   = envInt("PTAH_2365_REG_ITERS", 100)
 	regLoops   = envInt("PTAH_2365_REG_LOOPS", 2)
+	// The package the fault was seen in has 473 top-level tests, most with
+	// subtests and t.Parallel. That is hundreds of testing.T values, cleanup
+	// slices and framework goroutines, and it is a large part of what such a
+	// binary allocates. Thirty-two workers do not resemble it.
+	smallTests = envInt("PTAH_2365_SMALL_TESTS", 400)
 	// How many workers run the Go toolchain. The package the fault was seen in
 	// builds a helper in a handful of its tests, not in all of them, and a build
 	// per worker would dominate the iteration instead of being one ingredient
@@ -189,6 +194,31 @@ func TestWorkload(t *testing.T) {
 				exercise(t, filepath.Join(dir, fmt.Sprintf("r%02d.dat", round)), round)
 			}
 			spawnChild(t)
+		})
+	}
+}
+
+// TestManySmallParallel mirrors the shape of a package with hundreds of
+// parallel tests rather than a handful of large ones: the framework's own
+// per-test allocation is part of the workload being reduced.
+func TestManySmallParallel(t *testing.T) {
+	for i := range smallTests {
+		t.Run(fmt.Sprintf("case-%03d", i), func(t *testing.T) {
+			t.Parallel()
+			t.Cleanup(func() {})
+			r := &registry{}
+			for k := range 8 {
+				r.register(&entry{
+					version:     int64(k),
+					description: "small",
+					up:          func() error { return nil },
+					down:        func() error { return nil },
+				})
+			}
+			if got := len(r.all()); got != 8 {
+				t.Fatalf("registry length = %d, want 8", got)
+			}
+			slog.Info("Applied migration", "version", i, "description", "case")
 		})
 	}
 }
