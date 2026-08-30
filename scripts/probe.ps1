@@ -14,6 +14,10 @@ param(
   # A -test.run listing 172 names is some 7 KB, which is more than a workflow
   # input and PowerShell quoting should be asked to carry.
   [string]$FilterFile = '',
+  # Extra arguments for `go test -c`, e.g. -race. Passed as an array and
+  # splatted, never interpolated into a string: PowerShell splits a bare
+  # -test.count=1 at the dot, and the same would happen to -gcflags=all=-d=...
+  [string[]]$BuildFlags = @(),
   # Rebuild the test binary before every iteration. Three of the five
   # reproductions whose dump names a test landed on the smoke run -- the first
   # execution after `go test -c` -- and copying the image per iteration did not
@@ -75,7 +79,7 @@ switch ($Kind) {
 $root = $PWD
 
 Push-Location $buildDir
-go test -c -o "$PWD\probe.test.exe" $pkg 2>&1 | Tee-Object -FilePath "$PWD\build.log"
+go test -c @BuildFlags -o "$PWD\probe.test.exe" $pkg 2>&1 | Tee-Object -FilePath "$PWD\build.log"
 if ($LASTEXITCODE -ne 0) {
   Pop-Location
   "refused: could not build $pkg" | Out-File (Join-Path $root 'verdict.txt')
@@ -164,7 +168,7 @@ for ($i = 1; $i -le $iterations; $i++) {
   $iterBin = Join-Path $runDir "probe-iter-$i.exe"
   if ($RebuildEachIteration) {
     Push-Location $buildDir
-    go test -c -o $iterBin $pkg 2>&1 | Out-Null
+    go test -c @BuildFlags -o $iterBin $pkg 2>&1 | Out-Null
     $buildStatus = $LASTEXITCODE
     Pop-Location
     if ($buildStatus -ne 0) {

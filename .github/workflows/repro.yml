@@ -39,6 +39,10 @@ on:
         description: 'Extra GODEBUG settings, e.g. gccheckmark=1 to fail at the bad mark instead of at the next sweep'
         required: false
         default: ''
+      build_flags:
+        description: 'Extra space-separated arguments for `go test -c`, e.g. -race. The runtime names -race and -d=checkptr in the abort text itself, and the job that fails upstream passes neither.'
+        required: false
+        default: ''
       paired_godebug:
         description: 'GODEBUG for shards whose id starts with B. Pairs an A/B inside ONE run, so both conditions meet the same fleet at the same time; comparing separate runs cannot tell a real difference from a quiet hour.'
         required: false
@@ -202,7 +206,7 @@ jobs:
           GOGC: '1'
           GOEXPERIMENT: ${{ startsWith(matrix.shard, 'B') && inputs.paired_go_experiment || inputs.go_experiment }}
           PROBE_GODEBUG: ${{ startsWith(matrix.shard, 'B') && inputs.paired_godebug || inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
+        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' -BuildFlags @('${{ inputs.build_flags }}'.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
 
       # The shard name says which arm was intended. This says which one ran.
       # They differ whenever an expression falls through, and a comparison that
@@ -219,6 +223,7 @@ jobs:
           "arm=$arm"                         | Out-File -Encoding utf8 -Append condition.txt
           "goexperiment=$env:GOEXPERIMENT"   | Out-File -Encoding utf8 -Append condition.txt
           "godebug=$env:PROBE_GODEBUG"       | Out-File -Encoding utf8 -Append condition.txt
+          "buildflags=${{ inputs.build_flags }}" | Out-File -Encoding utf8 -Append condition.txt
           Get-Content condition.txt
 
       - name: Keep what the probe saw
