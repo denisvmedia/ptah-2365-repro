@@ -43,6 +43,10 @@ on:
         description: 'Apply the golang/go#80799 fix as a build overlay, so a reproduction under the DEFAULT collector names the object and dumps its bytes. Prefer this to nogreenteagc, which removes the fault instead of reporting it.'
         required: false
         default: 'false'
+      paired_doublecheck:
+        description: 'For shards whose id starts with B, also enable the collector Green Tea consistency asserts. moveInlineMarks requires a scannable span inline marks to equal its inline scans, which separates a mark cleared from outside (the arrays diverge) from a mark the collector never set (they agree).'
+        required: false
+        default: 'false'
       build_flags:
         description: 'Extra space-separated arguments for `go test -c`, e.g. -race. The runtime names -race and -d=checkptr in the abort text itself, and the job that fails upstream passes neither.'
         required: false
@@ -240,11 +244,16 @@ jobs:
       - name: Make the zombie report name the object
         if: ${{ inputs.patch_zombie_report == 'true' }}
         shell: pwsh
+        env:
+          DOUBLECHECK: ${{ startsWith(matrix.shard, 'B') && inputs.paired_doublecheck == 'true' }}
         run: |
-          $overlay = go run ./cmd/patchreport -out $env:GITHUB_WORKSPACE
+          $args = @('-out', $env:GITHUB_WORKSPACE)
+          if ($env:DOUBLECHECK -eq 'true') { $args += '-doublecheck' }
+          $overlay = go run ./cmd/patchreport @args
           if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
           "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
-          Write-Host "overlay: $overlay"
+          "PROBE_DOUBLECHECK=$env:DOUBLECHECK" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          Write-Host "overlay: $overlay (doublecheck: $env:DOUBLECHECK)"
 
       - name: Probe
         shell: pwsh
@@ -278,6 +287,7 @@ jobs:
           "godebug=$env:PROBE_GODEBUG"       | Out-File -Encoding utf8 -Append condition.txt
           "buildflags=${{ inputs.build_flags }}" | Out-File -Encoding utf8 -Append condition.txt
           "overlay=$env:PROBE_OVERLAY"          | Out-File -Encoding utf8 -Append condition.txt
+          "doublecheck=$env:PROBE_DOUBLECHECK"   | Out-File -Encoding utf8 -Append condition.txt
           Get-Content condition.txt
 
       - name: Keep what the probe saw
