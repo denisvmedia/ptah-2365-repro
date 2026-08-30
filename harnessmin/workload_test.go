@@ -23,8 +23,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -44,13 +46,13 @@ const (
 )
 
 var (
-	workers = envInt("PTAH_2365_WORKERS", 8)
-	rounds  = envInt("PTAH_2365_ROUNDS", 2)
+	workers = envInt("PTAH_2365_WORKERS", 24)
+	rounds  = envInt("PTAH_2365_ROUNDS", 10)
 	writes  = envInt("PTAH_2365_INSERTS", 32)
 	// Files in the in-memory tree each worker parses per round. This is the
 	// path the reproduction was actually executing, so it carries weight rather
 	// than being one ingredient among many.
-	provFiles = envInt("PTAH_2365_FILES", 8)
+	provFiles = envInt("PTAH_2365_FILES", 32)
 	// The registry churn is weighted deliberately. Two of the four control
 	// reproductions were inside
 	// TestRegisteredMigrationProvider_ConcurrentRegisterAndMigrations, which is
@@ -95,6 +97,7 @@ func TestMain(m *testing.M) {
 
 	peers := startPeers()
 
+	rotate := 0
 	stop := make(chan struct{})
 
 	// Keep the shape that reproduced twice running for the whole process, not
@@ -128,7 +131,13 @@ func TestMain(m *testing.M) {
 			default:
 			}
 			witness.CheckLogger()
-			witness.Rotate(8)
+			// Rotation exists to keep cleanups firing, which proves the
+			// detector is live. Doing it every millisecond made witness.install
+			// 72% of every allocation in this binary -- the instrument
+			// dominating the profile it is supposed to observe.
+			if rotate++; rotate%200 == 0 {
+				witness.Rotate(2)
+			}
 			time.Sleep(time.Millisecond)
 		}
 	}()
@@ -275,7 +284,24 @@ func exercise(t *testing.T, path string, round int) {
 	cancel()
 	wg.Wait()
 
-	slog.Info("All migrations applied successfully", "round", round)
+	// The target's profile is 314 allocation sites wide and includes regexp,
+	// context.WithoutCancel, strings.genSplit and testing temp directories.
+	// This arm had 27 sites, which is a different program however much it
+	// allocates.
+	re := regexp.MustCompile(fmt.Sprintf(`^t_%d_(\d+)$`, round))
+	hits := 0
+	for _, mf := range loaded {
+		for field := range strings.SplitSeq(mf.sql, ";") {
+			if re.MatchString(strings.TrimSpace(field)) {
+				hits++
+			}
+		}
+	}
+	detached := context.WithoutCancel(t.Context())
+	_ = detached
+	_ = t.TempDir()
+
+	slog.Info("All migrations applied successfully", "round", round, "hits", hits)
 }
 
 // buildHelper runs the Go toolchain as a child process, which is what the
