@@ -29,6 +29,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -104,6 +105,15 @@ func TestMain(m *testing.M) {
 	rotate := 0
 	stop := make(chan struct{})
 
+	// Spinners occupy Ps with call-free loops for the life of the process, so
+	// the scheduler must preempt them through the Windows suspend/resume path
+	// continuously while everything else allocates.
+	var spinStop atomic.Bool
+	spinners := envInt("PTAH_2365_SPINNERS", 2)
+	for range spinners {
+		go spin(&spinStop)
+	}
+
 	// Keep the shape that reproduced twice running for the whole process, not
 	// only when a worker happens to reach it.
 	var registries sync.WaitGroup
@@ -139,7 +149,7 @@ func TestMain(m *testing.M) {
 			// detector is live. Doing it every millisecond made witness.install
 			// 72% of every allocation in this binary -- the instrument
 			// dominating the profile it is supposed to observe.
-			if rotate++; rotate%200 == 0 {
+			if rotate++; rotate%20 == 0 {
 				witness.Rotate(2)
 			}
 			time.Sleep(time.Millisecond)
@@ -147,6 +157,7 @@ func TestMain(m *testing.M) {
 	}()
 
 	code := m.Run()
+	spinStop.Store(true)
 	close(stop)
 	arenas.Wait()
 	registries.Wait()
@@ -164,6 +175,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// Give the superseded generations a chance to be collected before deciding
+	// the detector never fired: liveness is proven by cleanups running, and
+	// cleanups need a collection after the supersession.
+	runtime.GC()
+	runtime.GC()
 	if witness.StaleSeen.Load() == 0 {
 		fmt.Fprintln(os.Stderr, "REFUSED: no cleanup ever fired; the detector was inert")
 		os.Exit(2)
@@ -338,7 +354,7 @@ func exercise(t *testing.T, path string, round int) {
 		rows.Close()
 	}
 
-	slog.Info("All migrations applied successfully", "round", round, "hits", hits)
+	slog.Info("All migrations applied successfully", "round", round, "hits", hits, "boxed", boxSingles(64))
 }
 
 // buildHelper runs the Go toolchain as a child process, which is what the
