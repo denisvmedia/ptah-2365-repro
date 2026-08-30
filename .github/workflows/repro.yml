@@ -258,6 +258,28 @@ jobs:
           "PROBE_DOUBLECHECK=$env:DOUBLECHECK" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
           Write-Host "overlay: $overlay (doublecheck: $env:DOUBLECHECK)"
 
+      # An overlay whose key names a file the build never reads is not an
+      # error -- it is silently unused. The build would then succeed, the log
+      # would still print an overlay path, and a reproduction would come back
+      # with the same empty report the overlay exists to repair.
+      #
+      # So prove it on this machine, before measuring: makezombie builds a
+      # zombie on purpose, and only a patched runtime names it.
+      - name: Prove the overlay took effect
+        if: ${{ inputs.patch_zombie_report == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $text = & go run "-overlay=$env:PROBE_OVERLAY" ./zombiereport/cmd/makezombie 2>&1 | Out-String
+          if ($text -match 'no abort') {
+            throw 'makezombie exited cleanly, so nothing was verified'
+          }
+          if ($text -notmatch 'zombie') {
+            Write-Host $text
+            throw 'the overlay did not take effect: the report named no object'
+          }
+          Write-Host 'overlay verified: the report names the object'
+
       - name: Probe
         shell: pwsh
         env:
