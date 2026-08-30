@@ -62,13 +62,28 @@ Pop-Location
 # reported as that rather than as a strange first iteration. Every abort this
 # repository is chasing went unexplained because something reported without
 # running; the probe should not join them.
+$signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHANGED|found pointer to free object|marked free object|unexpected fault address|Exception 0xc0000005|fatal error:'
+
 $smoke = Join-Path $root 'smoke.log'
 Push-Location $runDir
 & $bin @testArgs 2>&1 | Tee-Object -FilePath $smoke | Out-Null
 $smokeStatus = $LASTEXITCODE
 Pop-Location
+# The signature first. A run that aborts in the collector prints a stack trace
+# and never reaches PASS, so asking "did it produce a test result" before asking
+# "did it reproduce" classifies the thing being hunted as a broken probe. That
+# is exactly what happened to the first bisection branch, and the evidence was
+# thrown away with it.
+if (Select-String -Path $smoke -Pattern $signatures -Quiet) {
+  "REPRODUCED on the smoke run, before iteration 1" | Out-File (Join-Path $root 'verdict.txt')
+  Copy-Item -LiteralPath $smoke -Destination (Join-Path $root 'probe-smoke.log') -Force
+  Write-Host "::error::reproduced on the smoke run; the artifact holds the full output"
+  Get-Content $smoke -Tail 80
+  exit 1
+}
 if (-not (Select-String -Path $smoke -Pattern '^(PASS|ok|FAIL|---)' -Quiet)) {
   "refused: the test binary produced no test result when invoked" | Out-File (Join-Path $root 'verdict.txt')
+  Copy-Item -LiteralPath $smoke -Destination (Join-Path $root 'probe-smoke.log') -Force
   Write-Host "::error::the test binary produced no test result; see smoke.log"
   Get-Content $smoke -Tail 20
   exit 1
@@ -88,7 +103,6 @@ Remove-Item $smoke -ErrorAction SilentlyContinue
 Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC, filter=$Filter"
 
 $ran = 0
-$signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHANGED|found pointer to free object|marked free object|unexpected fault address|Exception 0xc0000005|fatal error:'
 
 for ($i = 1; $i -le $iterations; $i++) {
   $log = Join-Path $root "probe-$i.log"

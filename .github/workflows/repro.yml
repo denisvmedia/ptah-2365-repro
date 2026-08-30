@@ -179,6 +179,7 @@ jobs:
           name: control-probe-${{ matrix.shard }}
           path: |
             probe-*.log
+            smoke.log
             verdict.txt
           if-no-files-found: warn
           retention-days: 30
