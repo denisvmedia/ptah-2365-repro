@@ -3,6 +3,46 @@
 An attempt to reduce a windows/amd64 heap fault to something small enough to
 hand to the Go tracker.
 
+## What has been established
+
+Measured on GitHub-hosted `windows-latest` with go1.27.0, against
+`stokaro/ptah@9278f8566`.
+
+**The collected crash reports were empty by construction.** `reportZombies`
+reads the marks through `markBitsForBase`, which for a span with inline mark
+bits returns the array `moveInlineMarks` cleared one line earlier. Every abort
+in this fault is `elemsize=16`, which takes that path, so every report printed
+one row per object, called all of them unmarked, identified nothing, and threw.
+This is [golang/go#80799](https://github.com/golang/go/issues/80799).
+[`zombiereport/`](zombiereport/) reproduces it deterministically in about forty
+lines on three operating systems, and the fix that issue proposes is verified
+there.
+
+**With the report repaired, the fault names its objects.** Same collector, same
+commit: 84 to 99 zombies per reproduction, symbolized as `database/sql` method
+values and string headers — live objects, not stale memory.
+
+**The direction of the failure is measured.** Enabling the collector's own
+`doubleCheckGreenTea` asserts trips `marks don't match scans` a cycle earlier,
+and printing which way the arrays differ gives `markedNotScanned` of 98 and
+104, with `scannedNotMarked` of **zero** in both. Marks were set and never
+consumed; nothing cleared them. External corruption predicts the opposite.
+
+**Green Tea is required for the fault to appear.** `GOEXPERIMENT=nogreenteagc`
+came back clean over 48 jobs against a same-day default-collector rate of 8.8%
+(Fisher p = 0.03).
+
+**One structural fact, unexplained.** In five independent reproductions the
+divergence begins at object index **256** — where the zombies start in three,
+and where the scans stop in two — across different spans, freeindexes and
+object counts.
+
+What is *not* established is the code path that produces this. Three
+hypotheses were built and closed by reading: a P's span queue being dropped on
+destroy, `tryAcquire` succeeding while `put` fails, and `work.spanqMask` being
+set only on spill. See [`stokaro/ptah#2365`](https://github.com/stokaro/ptah/issues/2365)
+for the reasoning.
+
 ## What is being reduced
 
 A Go test binary aborts intermittently on GitHub-hosted `windows-latest` — 38
