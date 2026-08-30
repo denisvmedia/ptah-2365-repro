@@ -247,9 +247,12 @@ jobs:
         env:
           DOUBLECHECK: ${{ startsWith(matrix.shard, 'B') && inputs.paired_doublecheck == 'true' }}
         run: |
-          $args = @('-out', $env:GITHUB_WORKSPACE)
-          if ($env:DOUBLECHECK -eq 'true') { $args += '-doublecheck' }
-          $overlay = go run ./cmd/patchreport @args
+          # Not $args: that is a PowerShell automatic variable, and assigning
+          # to it is a quiet way to get an argument list that is not the one
+          # written here.
+          $patchArgs = @('-out', $env:GITHUB_WORKSPACE)
+          if ($env:DOUBLECHECK -eq 'true') { $patchArgs += '-doublecheck' }
+          $overlay = go run ./cmd/patchreport @patchArgs
           if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
           "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
           "PROBE_DOUBLECHECK=$env:DOUBLECHECK" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
