@@ -120,7 +120,24 @@ if ($smokeStatus -ne 0) {
 }
 Remove-Item $smoke -ErrorAction SilentlyContinue
 
-Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC, filter=$Filter"
+# GODEBUG is set here rather than in the workflow so the value the run actually
+# had is printed beside the rest of its configuration.
+if ($env:PROBE_GODEBUG) { $env:GODEBUG = $env:PROBE_GODEBUG }
+
+Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC, GOEXPERIMENT=$env:GOEXPERIMENT, GODEBUG=$env:GODEBUG, filter=$Filter"
+
+# A run that asked for an experiment has to prove it got one, or a clean result
+# would be indistinguishable from the experiment silently not applying -- the
+# same failure this repository keeps catching in its own probes.
+if ($env:GOEXPERIMENT) {
+  $stamp = & go version -m $bin 2>&1 | Out-String
+  if ($stamp -notmatch [regex]::Escape($env:GOEXPERIMENT)) {
+    "refused: GOEXPERIMENT=$env:GOEXPERIMENT did not reach the binary" | Out-File (Join-Path $root 'verdict.txt')
+    Write-Host "::error::GOEXPERIMENT=$env:GOEXPERIMENT is not recorded in the built binary"
+    exit 1
+  }
+  Write-Host "confirmed: the binary records GOEXPERIMENT=$env:GOEXPERIMENT"
+}
 
 $ran = 0
 

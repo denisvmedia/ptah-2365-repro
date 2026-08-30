@@ -27,6 +27,14 @@ on:
         description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
         default: 'all'
+      go_experiment:
+        description: 'GOEXPERIMENT for the arm, e.g. nogreenteagc to make the zombie report name the object'
+        required: false
+        default: ''
+      godebug:
+        description: 'Extra GODEBUG settings, e.g. gccheckmark=1 to fail at the bad mark instead of at the next sweep'
+        required: false
+        default: ''
       filter_file:
         description: 'A file of test names (one per line) for the control arm, e.g. filters/nosqlite.txt'
         required: false
@@ -78,6 +86,8 @@ jobs:
           PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
           PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
           GOGC: '1'
+          GOEXPERIMENT: ${{ inputs.go_experiment }}
+          PROBE_GODEBUG: ${{ inputs.godebug }}
         run: ./scripts/probe.ps1 -Kind candidate
 
       - name: Keep what the probe saw
@@ -121,6 +131,8 @@ jobs:
           PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
           PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
           GOGC: '1'
+          GOEXPERIMENT: ${{ inputs.go_experiment }}
+          PROBE_GODEBUG: ${{ inputs.godebug }}
         run: ./scripts/probe.ps1 -Kind candidate-min
 
       - name: Keep what the probe saw
@@ -174,6 +186,8 @@ jobs:
         env:
           ITERATIONS: ${{ inputs.iterations || '80' }}
           GOGC: '1'
+          GOEXPERIMENT: ${{ inputs.go_experiment }}
+          PROBE_GODEBUG: ${{ inputs.godebug }}
         run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}'
 
       - name: Keep what the probe saw
