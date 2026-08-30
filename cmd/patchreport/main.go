@@ -42,6 +42,39 @@ const (
 	dcFile = "mgcmark_greenteagc.go"
 	dcOld  = "const doubleCheckGreenTea = false"
 	dcNew  = "const doubleCheckGreenTea = true"
+
+	// The assert alone says the arrays differ, not which way, and the
+	// direction is the whole question: marks without scans is a span that was
+	// queued and never scanned, which is the collector's own bookkeeping;
+	// scans without marks is a mark that was set and then cleared, which
+	// something outside the collector had to do.
+	dirOld = `	if doubleCheckGreenTea && !s.spanclass.noscan() && imb.marks != imb.scans {
+		throw("marks don't match scans for span with pointer")
+	}`
+	dirNew = `	if doubleCheckGreenTea && !s.spanclass.noscan() && imb.marks != imb.scans {
+		printlock()
+		print("runtime: span ", s, " elemsize=", s.elemsize, " nelems=", s.nelems, " freeindex=", s.freeindex, "\n")
+		markedNotScanned := 0
+		scannedNotMarked := 0
+		for i := range imb.marks {
+			m := imb.marks[i]
+			c := imb.scans[i]
+			if m != c {
+				print("  byte ", i, " marks=", m, " scans=", c, "\n")
+			}
+			for b := uint(0); b < 8; b++ {
+				if m&(1<<b) != 0 && c&(1<<b) == 0 {
+					markedNotScanned++
+				}
+				if c&(1<<b) != 0 && m&(1<<b) == 0 {
+					scannedNotMarked++
+				}
+			}
+		}
+		print("runtime: markedNotScanned=", markedNotScanned, " scannedNotMarked=", scannedNotMarked, "\n")
+		printunlock()
+		throw("marks don't match scans for span with pointer")
+	}`
 )
 
 func main() {
@@ -93,8 +126,14 @@ func main() {
 		if n := strings.Count(string(dcBody), dcOld); n != 1 {
 			fail("expected exactly one %q in %s, found %d", dcOld, dcSrc, n)
 		}
+		dcText := strings.Replace(string(dcBody), dcOld, dcNew, 1)
+		if n := strings.Count(dcText, dirOld); n != 1 {
+			fail("expected exactly one marks/scans assert in %s, found %d", dcSrc, n)
+		}
+		dcText = strings.Replace(dcText, dirOld, dirNew, 1)
+
 		dcDst := filepath.Join(*out, "mgcmark_greenteagc_patched.go")
-		if err := os.WriteFile(dcDst, []byte(strings.Replace(string(dcBody), dcOld, dcNew, 1)), 0o644); err != nil {
+		if err := os.WriteFile(dcDst, []byte(dcText), 0o644); err != nil {
 			fail("writing %s: %v", dcDst, err)
 		}
 		replace[dcSrc] = dcDst
