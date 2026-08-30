@@ -76,6 +76,16 @@ workflow does.
   16-byte two-pointer objects with generation tags, so a cleanup firing for the
   generation a root still holds is a collected live object; and a check that
   `slog.Default()`'s first word is still the `*itab` it was built with.
+- `zombiereport/` — not a search for the rare fault but a deterministic
+  measurement of what the runtime says when it finds one. It builds a zombie on
+  purpose in a 16-byte scannable span and reads the report back. Under the
+  default collector the report prints 496 rows, calls every one of them
+  unmarked, identifies nothing, dumps no memory and aborts anyway; under
+  `GOEXPERIMENT=nogreenteagc` the same zombie is named and hexdumped. Measured
+  identically on linux/amd64, windows/amd64 and darwin/arm64. This is
+  [golang/go#80799](https://github.com/golang/go/issues/80799), and it is why
+  every crash dump collected for the fault carried no evidence by construction
+  rather than by chance.
 - `scripts/probe.ps1` — the iteration loop, shared by both arms.
 - `.github/workflows/repro.yml` — `workflow_dispatch` and nightly.
 
