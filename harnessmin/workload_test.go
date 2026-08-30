@@ -180,6 +180,10 @@ func exercise(t *testing.T, path string, round int) {
 		slog.Info("Applying migration", "version", 1, "description", mf.run())
 	}
 
+	// The other reproduction's path: concurrent producers appending pointers to
+	// a growing slice while consumers clone and walk it.
+	slog.Info("Registered migrations", "seen", churnRegistry(4, 100))
+
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("create: %v", err)
