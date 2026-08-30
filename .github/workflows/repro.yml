@@ -27,6 +27,10 @@ on:
         description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
         default: 'all'
+      test_filter:
+        description: 'A -test.run pattern for the control arm, for bisecting the package down to a minimal set'
+        required: false
+        default: ''
       shard_list:
         description: 'JSON array of shard ids; one parallel job per entry, per arm. The fault is rare, so width beats patience.'
         required: false
@@ -166,7 +170,7 @@ jobs:
         env:
           ITERATIONS: ${{ inputs.iterations || '80' }}
           GOGC: '1'
-        run: ./scripts/probe.ps1 -Kind control
+        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}'
 
       - name: Keep what the probe saw
         if: always()

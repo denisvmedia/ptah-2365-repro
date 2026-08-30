@@ -5,7 +5,11 @@
 # this whole exercise exists to avoid: every abort in the field was invisible
 # for the same reason.
 param(
-  [Parameter(Mandatory = $true)][ValidateSet('candidate', 'candidate-min', 'control')][string]$Kind
+  [Parameter(Mandatory = $true)][ValidateSet('candidate', 'candidate-min', 'control')][string]$Kind,
+  # A -test.run pattern, so the control arm can be bisected: the fault
+  # reproduces on the first iteration under GOGC=1, which makes halving the
+  # package's test list a minutes-long question rather than a nightly one.
+  [string]$Filter = ''
 )
 
 # Continue, deliberately. Under Stop a native command's stderr merged with 2>&1
@@ -19,6 +23,7 @@ $ErrorActionPreference = 'Continue'
 # passing keeps PowerShell from re-quoting them on the way.
 $PSNativeCommandArgumentPassing = 'Standard'
 $testArgs = @('-test.count=1', '-test.timeout=25m')
+if ($Filter) { $testArgs += "-test.run=$Filter" }
 
 $iterations = if ($env:ITERATIONS) { [int]$env:ITERATIONS } else { 80 }
 if ($iterations -lt 1) {
@@ -80,7 +85,7 @@ if ($smokeStatus -ne 0) {
 }
 Remove-Item $smoke -ErrorAction SilentlyContinue
 
-Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC"
+Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC, filter=$Filter"
 
 $ran = 0
 $signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHANGED|found pointer to free object|marked free object|unexpected fault address|Exception 0xc0000005|fatal error:'
