@@ -108,6 +108,12 @@ func TestMain(m *testing.M) {
 	// Spinners occupy Ps with call-free loops for the life of the process, so
 	// the scheduler must preempt them through the Windows suspend/resume path
 	// continuously while everything else allocates.
+	var procWG sync.WaitGroup
+	if envInt("PTAH_2365_PROCATTR", 1) > 0 && os.Getenv(peerEnv) == "" {
+		procWG.Add(1)
+		go procAttrChurn(stop, &procWG, envInt("PTAH_2365_PROCATTR", 1))
+	}
+
 	var spinStop atomic.Bool
 	spinners := envInt("PTAH_2365_SPINNERS", 2)
 	for range spinners {
@@ -159,6 +165,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	spinStop.Store(true)
 	close(stop)
+	procWG.Wait()
 	arenas.Wait()
 	registries.Wait()
 
