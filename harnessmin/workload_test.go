@@ -51,6 +51,14 @@ var (
 	// path the reproduction was actually executing, so it carries weight rather
 	// than being one ingredient among many.
 	provFiles = envInt("PTAH_2365_FILES", 64)
+	// The registry churn is weighted deliberately. Two of the four control
+	// reproductions were inside
+	// TestRegisteredMigrationProvider_ConcurrentRegisterAndMigrations, which is
+	// the only shape named twice, so it runs continuously here rather than once
+	// per round.
+	regWorkers = envInt("PTAH_2365_REG_WORKERS", 4)
+	regIters   = envInt("PTAH_2365_REG_ITERS", 100)
+	regLoops   = envInt("PTAH_2365_REG_LOOPS", 2)
 	// How many workers run the Go toolchain. The package the fault was seen in
 	// builds a helper in a handful of its tests, not in all of them, and a build
 	// per worker would dominate the iteration instead of being one ingredient
@@ -80,6 +88,25 @@ func TestMain(m *testing.M) {
 	peers := startPeers()
 
 	stop := make(chan struct{})
+
+	// Keep the shape that reproduced twice running for the whole process, not
+	// only when a worker happens to reach it.
+	var registries sync.WaitGroup
+	for range regLoops {
+		registries.Add(1)
+		go func() {
+			defer registries.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				churnRegistry(regWorkers, regIters)
+			}
+		}()
+	}
+
 	var arenas sync.WaitGroup
 	for range envInt("PTAH_2365_ARENAS", 2) {
 		arenas.Add(1)
@@ -101,6 +128,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	close(stop)
 	arenas.Wait()
+	registries.Wait()
 
 	// A peer that found the fault reports it in its own output and exits 97;
 	// say so here too, or the parent's clean summary would bury it.
