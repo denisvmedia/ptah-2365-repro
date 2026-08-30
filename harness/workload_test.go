@@ -97,9 +97,12 @@ func envInt(name string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
+	if err != nil || n < 0 {
 		return def
 	}
+	// Zero is a value, not an absence. Rejecting it made PTAH_2365_PEERS=0 mean
+	// three peers, so every measurement taken "without peers" was in fact taken
+	// with three of them writing to the same stderr.
 	return n
 }
 

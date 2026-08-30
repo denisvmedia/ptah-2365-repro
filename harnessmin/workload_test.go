@@ -46,13 +46,13 @@ const (
 )
 
 var (
-	workers = envInt("PTAH_2365_WORKERS", 24)
-	rounds  = envInt("PTAH_2365_ROUNDS", 10)
+	workers = envInt("PTAH_2365_WORKERS", 48)
+	rounds  = envInt("PTAH_2365_ROUNDS", 20)
 	writes  = envInt("PTAH_2365_INSERTS", 32)
 	// Files in the in-memory tree each worker parses per round. This is the
 	// path the reproduction was actually executing, so it carries weight rather
 	// than being one ingredient among many.
-	provFiles = envInt("PTAH_2365_FILES", 32)
+	provFiles = envInt("PTAH_2365_FILES", 64)
 	// The registry churn is weighted deliberately. Two of the four control
 	// reproductions were inside
 	// TestRegisteredMigrationProvider_ConcurrentRegisterAndMigrations, which is
@@ -82,9 +82,12 @@ func envInt(name string, def int) int {
 		return def
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
+	if err != nil || n < 0 {
 		return def
 	}
+	// Zero is a value, not an absence. Rejecting it made PTAH_2365_PEERS=0 mean
+	// three peers, so every measurement taken "without peers" was in fact taken
+	// with three of them writing to the same stderr.
 	return n
 }
 
@@ -199,7 +202,10 @@ func TestWorkload(t *testing.T) {
 		t.Run(fmt.Sprintf("worker-%02d", i), func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			if i%max(1, workers/builders) == 0 {
+			// builders == 0 disables the toolchain child entirely; before the
+			// envInt fix that value silently meant "use the default", so this
+			// division never saw a zero.
+			if builders > 0 && i%max(1, workers/builders) == 0 {
 				buildHelper(t, dir)
 			}
 			for round := range rounds {
