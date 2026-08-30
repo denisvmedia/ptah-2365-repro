@@ -47,6 +47,10 @@ var (
 	workers = envInt("PTAH_2365_WORKERS", 32)
 	rounds  = envInt("PTAH_2365_ROUNDS", 48)
 	writes  = envInt("PTAH_2365_INSERTS", 256)
+	// Files in the in-memory tree each worker parses per round. This is the
+	// path the reproduction was actually executing, so it carries weight rather
+	// than being one ingredient among many.
+	provFiles = envInt("PTAH_2365_FILES", 64)
 	// How many workers run the Go toolchain. The package the fault was seen in
 	// builds a helper in a handful of its tests, not in all of them, and a build
 	// per worker would dominate the iteration instead of being one ingredient
@@ -164,6 +168,17 @@ func TestWorkload(t *testing.T) {
 func exercise(t *testing.T, path string, round int) {
 	t.Helper()
 	slog.Info("Migrating up", "currentVersion", 0, "totalMigrations", 2, "round", round)
+
+	// Parse a tree of migration-shaped files: the code path the reproduction
+	// was in when the collector aborted.
+	fsys := buildFS(provFiles)
+	loaded, err := loadAll(fsys)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, mf := range loaded {
+		slog.Info("Applying migration", "version", 1, "description", mf.run())
+	}
 
 	f, err := os.Create(path)
 	if err != nil {
