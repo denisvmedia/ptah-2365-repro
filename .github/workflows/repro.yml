@@ -27,6 +27,10 @@ on:
         description: 'Which arms to run: all | candidate | candidate-min | control'
         required: false
         default: 'all'
+      rebuild_each_iteration:
+        description: 'Rebuild the test binary before every iteration (true/false). Reproductions cluster on the first run after a build.'
+        required: false
+        default: 'false'
       go_experiment:
         description: 'GOEXPERIMENT for the arm, e.g. nogreenteagc to make the zombie report name the object'
         required: false
@@ -88,7 +92,7 @@ jobs:
           GOGC: '1'
           GOEXPERIMENT: ${{ inputs.go_experiment }}
           PROBE_GODEBUG: ${{ inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind candidate
+        run: ./scripts/probe.ps1 -Kind candidate ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
 
       - name: Keep what the probe saw
         if: always()
@@ -133,7 +137,7 @@ jobs:
           GOGC: '1'
           GOEXPERIMENT: ${{ inputs.go_experiment }}
           PROBE_GODEBUG: ${{ inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind candidate-min
+        run: ./scripts/probe.ps1 -Kind candidate-min ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
 
       - name: Keep what the probe saw
         if: always()
@@ -188,7 +192,7 @@ jobs:
           GOGC: '1'
           GOEXPERIMENT: ${{ inputs.go_experiment }}
           PROBE_GODEBUG: ${{ inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}'
+        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
 
       - name: Keep what the probe saw
         if: always()

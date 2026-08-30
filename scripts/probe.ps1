@@ -13,7 +13,14 @@ param(
   # A file of test names, one per line, turned into an anchored alternation.
   # A -test.run listing 172 names is some 7 KB, which is more than a workflow
   # input and PowerShell quoting should be asked to carry.
-  [string]$FilterFile = ''
+  [string]$FilterFile = '',
+  # Rebuild the test binary before every iteration. Three of the five
+  # reproductions whose dump names a test landed on the smoke run -- the first
+  # execution after `go test -c` -- and copying the image per iteration did not
+  # reproduce that, so what matters is not a path the scanner has not seen but
+  # the state a build leaves behind: cold pages for a sixty-megabyte image, a
+  # freshly written build cache, and whatever the linker did to the machine.
+  [switch]$RebuildEachIteration
 )
 
 # Continue, deliberately. Under Stop a native command's stderr merged with 2>&1
@@ -153,7 +160,19 @@ for ($i = 1; $i -le $iterations; $i++) {
   # rather than re-running one file eighty times. Copying is far cheaper than
   # rebuilding and produces the same thing: a path the scanner has not seen.
   $iterBin = Join-Path $runDir "probe-iter-$i.exe"
-  Copy-Item -LiteralPath $bin -Destination $iterBin -Force
+  if ($RebuildEachIteration) {
+    Push-Location $buildDir
+    go test -c -o $iterBin $pkg 2>&1 | Out-Null
+    $buildStatus = $LASTEXITCODE
+    Pop-Location
+    if ($buildStatus -ne 0) {
+      "refused: rebuild failed at iteration $i" | Out-File (Join-Path $root 'verdict.txt')
+      Write-Host "::error::rebuild failed at iteration $i"
+      exit 1
+    }
+  } else {
+    Copy-Item -LiteralPath $bin -Destination $iterBin -Force
+  }
 
   Push-Location $runDir
   & $iterBin @testArgs 2>&1 | Tee-Object -FilePath $log | Out-Null
