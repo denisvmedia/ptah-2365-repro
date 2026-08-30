@@ -279,6 +279,11 @@ jobs:
             throw 'the overlay did not take effect: the report named no object'
           }
           Write-Host 'overlay verified: the report names the object'
+          # makezombie aborts on purpose, so go run leaves $LASTEXITCODE at 2,
+          # and the pwsh wrapper GitHub adds ends the step with it. The check
+          # above already decides this step: say so, or a passing proof fails
+          # the job and the instrument looks broken when it is working.
+          exit 0
 
       - name: Probe
         shell: pwsh
