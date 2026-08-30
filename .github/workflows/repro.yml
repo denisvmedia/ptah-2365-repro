@@ -96,9 +96,22 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Same reasoning as the control job: setup-go installs the `go` directive
+      # and the `toolchain` line then fetches another version into GOMODCACHE,
+      # where `go` refuses an overlay. Install the toolchain version and pin it.
+      - name: Read the toolchain this module declares
+        id: toolchain
+        shell: pwsh
+        run: |
+          $line = Select-String -Path go.mod -Pattern '^toolchain go(.+)$'
+          if (-not $line) { throw 'go.mod declares no toolchain line' }
+          $v = $line.Matches[0].Groups[1].Value.Trim()
+          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
+          Write-Host "toolchain: $v"
+
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.toolchain.outputs.version }}
           cache: true
 
       - run: go mod download
@@ -142,12 +155,52 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Same reasoning as the control job: setup-go installs the `go` directive
+      # and the `toolchain` line then fetches another version into GOMODCACHE,
+      # where `go` refuses an overlay. Install the toolchain version and pin it.
+      - name: Read the toolchain this module declares
+        id: toolchain
+        shell: pwsh
+        run: |
+          $line = Select-String -Path go.mod -Pattern '^toolchain go(.+)$'
+          if (-not $line) { throw 'go.mod declares no toolchain line' }
+          $v = $line.Matches[0].Groups[1].Value.Trim()
+          "version=$v" | Out-File -Encoding utf8 -Append $env:GITHUB_OUTPUT
+          Write-Host "toolchain: $v"
+
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: ${{ steps.toolchain.outputs.version }}
           cache: true
 
       - run: go mod download
+
+      # A reproduction here must not land in the same empty report every control
+      # one did, so the candidate carries the instrument too.
+      - name: Make the zombie report name the object
+        if: ${{ inputs.patch_zombie_report == 'true' }}
+        shell: pwsh
+        run: |
+          $overlay = go run ./cmd/patchreport -out $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
+          "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          Write-Host "overlay: $overlay"
+
+      - name: Prove the overlay took effect
+        if: ${{ inputs.patch_zombie_report == 'true' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $text = & go run "-overlay=$env:PROBE_OVERLAY" ./zombiereport/cmd/makezombie 2>&1 | Out-String
+          if ($text -match 'no abort') {
+            throw 'makezombie exited cleanly, so nothing was verified'
+          }
+          if ($text -notmatch 'zombie') {
+            Write-Host $text
+            throw 'the overlay did not take effect: the report named no object'
+          }
+          Write-Host 'overlay verified: the report names the object'
+          exit 0
 
       - name: Probe
         shell: pwsh
