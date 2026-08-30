@@ -39,6 +39,10 @@ on:
         description: 'Extra GODEBUG settings, e.g. gccheckmark=1 to fail at the bad mark instead of at the next sweep'
         required: false
         default: ''
+      patch_zombie_report:
+        description: 'Apply the golang/go#80799 fix as a build overlay, so a reproduction under the DEFAULT collector names the object and dumps its bytes. Prefer this to nogreenteagc, which removes the fault instead of reporting it.'
+        required: false
+        default: 'false'
       build_flags:
         description: 'Extra space-separated arguments for `go test -c`, e.g. -race. The runtime names -race and -d=checkptr in the abort text itself, and the job that fails upstream passes neither.'
         required: false
@@ -199,6 +203,18 @@ jobs:
         working-directory: upstream
         run: go mod download
 
+      # An absolute -out: probe.ps1 pushes into upstream/ before `go test -c`,
+      # so a relative overlay path would be resolved against the wrong
+      # directory and the build would silently use an unpatched runtime.
+      - name: Make the zombie report name the object
+        if: ${{ inputs.patch_zombie_report == 'true' }}
+        shell: pwsh
+        run: |
+          $overlay = go run ./cmd/patchreport -out $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
+          "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
+          Write-Host "overlay: $overlay"
+
       - name: Probe
         shell: pwsh
         env:
@@ -206,7 +222,13 @@ jobs:
           GOGC: '1'
           GOEXPERIMENT: ${{ startsWith(matrix.shard, 'B') && inputs.paired_go_experiment || inputs.go_experiment }}
           PROBE_GODEBUG: ${{ startsWith(matrix.shard, 'B') && inputs.paired_godebug || inputs.godebug }}
-        run: ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' -BuildFlags @('${{ inputs.build_flags }}'.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)) ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
+          BUILD_FLAGS: ${{ inputs.build_flags }}
+        run: |
+          $flags = @()
+          if ($env:BUILD_FLAGS) { $flags += $env:BUILD_FLAGS.Split(' ', [StringSplitOptions]::RemoveEmptyEntries) }
+          if ($env:PROBE_OVERLAY) { $flags += "-overlay=$env:PROBE_OVERLAY" }
+          Write-Host "build flags: $($flags -join ' ')"
+          ./scripts/probe.ps1 -Kind control -Filter '${{ inputs.test_filter }}' -FilterFile '${{ inputs.filter_file }}' -BuildFlags $flags ${{ inputs.rebuild_each_iteration == 'true' && '-RebuildEachIteration' || '' }}
 
       # The shard name says which arm was intended. This says which one ran.
       # They differ whenever an expression falls through, and a comparison that
@@ -224,6 +246,7 @@ jobs:
           "goexperiment=$env:GOEXPERIMENT"   | Out-File -Encoding utf8 -Append condition.txt
           "godebug=$env:PROBE_GODEBUG"       | Out-File -Encoding utf8 -Append condition.txt
           "buildflags=${{ inputs.build_flags }}" | Out-File -Encoding utf8 -Append condition.txt
+          "overlay=$env:PROBE_OVERLAY"          | Out-File -Encoding utf8 -Append condition.txt
           Get-Content condition.txt
 
       - name: Keep what the probe saw
