@@ -1,0 +1,124 @@
+# Try to make the windows/amd64 heap fault happen on purpose, in as little code
+# as possible.
+#
+# The candidate is this repository's harness. The control runs the real package
+# the fault was observed in, on the same runner, in the same job matrix. The
+# control is what makes a clean candidate mean anything: without it, "the
+# harness did not reproduce" and "this runner does not reproduce today" look
+# identical, and the whole point of the exercise is to tell those apart.
+name: repro
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: 'Iterations per arm'
+        required: false
+        default: '80'
+      workers:
+        description: 'Parallel workers inside one candidate iteration'
+        required: false
+        default: '32'
+      rounds:
+        description: 'Databases per worker'
+        required: false
+        default: '16'
+      arms:
+        description: 'Which arms to run: both | candidate | control'
+        required: false
+        default: 'both'
+  schedule:
+    # 04:20 UTC. The fault is rare, so the record is built by accumulating runs.
+    - cron: '20 4 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    if: ${{ github.event_name == 'schedule' || inputs.arms == 'both' || inputs.arms == 'candidate' }}
+    name: candidate (minimal harness)
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      # Git on Windows rewrites LF to CRLF by default and this repository
+      # stores LF.
+      - name: Keep the line endings the repository stores
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: go mod download
+
+      - name: Probe
+        shell: pwsh
+        env:
+          ITERATIONS: ${{ inputs.iterations || '80' }}
+          PTAH_2365_WORKERS: ${{ inputs.workers || '32' }}
+          PTAH_2365_ROUNDS: ${{ inputs.rounds || '16' }}
+          GOGC: '1'
+        run: ./scripts/probe.ps1 -Kind candidate
+
+      - name: Keep what the probe saw
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-probe
+          path: |
+            probe-*.log
+            verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
+
+  control:
+    if: ${{ github.event_name == 'schedule' || inputs.arms == 'both' || inputs.arms == 'control' }}
+    name: control (the package the fault was seen in)
+    runs-on: windows-latest
+    timeout-minutes: 350
+    steps:
+      - name: Keep the line endings the repository stores
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      # A commit whose CI run aborted, so the control is anchored to a known
+      # occurrence rather than to whatever master happens to be.
+      - name: Check out the package the fault was observed in
+        uses: actions/checkout@v4
+        with:
+          repository: stokaro/ptah
+          ref: 9278f8566c88c3bf949bd3c5cd22fad1d37006b4
+          path: upstream
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: upstream/go.mod
+          cache: true
+          cache-dependency-path: upstream/go.sum
+
+      - name: Install dependencies
+        working-directory: upstream
+        run: go mod download
+
+      - name: Probe
+        shell: pwsh
+        env:
+          ITERATIONS: ${{ inputs.iterations || '80' }}
+          GOGC: '1'
+        run: ./scripts/probe.ps1 -Kind control
+
+      - name: Keep what the probe saw
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: control-probe
+          path: |
+            probe-*.log
+            verdict.txt
+          if-no-files-found: warn
+          retention-days: 30
