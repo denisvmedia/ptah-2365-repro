@@ -177,14 +177,22 @@ jobs:
 
       # A reproduction here must not land in the same empty report every control
       # one did, so the candidate carries the instrument too.
+      # The asserts catch the precursor: the control's B arm trips
+      # marks-don't-match-scans a cycle before the same event would surface as a
+      # zombie, and at the same rate. A candidate measured only by the zombie
+      # signature is asking for the whole cascade; this asks for the first step.
       - name: Make the zombie report name the object
         if: ${{ inputs.patch_zombie_report == 'true' }}
         shell: pwsh
+        env:
+          DOUBLECHECK: ${{ startsWith(matrix.shard, 'B') && inputs.paired_doublecheck == 'true' }}
         run: |
-          $overlay = go run ./cmd/patchreport -out $env:GITHUB_WORKSPACE
+          $patchArgs = @('-out', $env:GITHUB_WORKSPACE)
+          if ($env:DOUBLECHECK -eq 'true') { $patchArgs += '-doublecheck' }
+          $overlay = go run ./cmd/patchreport @patchArgs
           if ($LASTEXITCODE -ne 0) { throw 'patchreport refused to patch; see its message' }
           "PROBE_OVERLAY=$overlay" | Out-File -Encoding utf8 -Append $env:GITHUB_ENV
-          Write-Host "overlay: $overlay"
+          Write-Host "overlay: $overlay (doublecheck: $env:DOUBLECHECK)"
 
       - name: Prove the overlay took effect
         if: ${{ inputs.patch_zombie_report == 'true' }}
