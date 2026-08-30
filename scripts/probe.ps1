@@ -27,17 +27,26 @@ if ($iterations -lt 1) {
   exit 1
 }
 
+# runDir matters. `go test` runs a package's tests with the working directory
+# set to that package, and tests rely on it: the control arm reads ..\..\docs
+# and shells out to `go build`, and running its binary from anywhere else fails
+# both. That is an artefact of the probe, not a property of the fault, and the
+# first run of this workflow spent an arm discovering it.
 switch ($Kind) {
-  'candidate'     { $buildDir = '.';        $pkg = './harness/' }      # with modernc.org/sqlite
-  'candidate-min' { $buildDir = '.';        $pkg = './harnessmin/' }   # standard library only
-  'control'       { $buildDir = 'upstream'; $pkg = './migration/migrator/' }
+  'candidate'     { $buildDir = '.';        $pkg = './harness/';            $runDir = 'harness' }      # with modernc.org/sqlite
+  'candidate-min' { $buildDir = '.';        $pkg = './harnessmin/';         $runDir = 'harnessmin' }   # standard library only
+  'control'       { $buildDir = 'upstream'; $pkg = './migration/migrator/'; $runDir = 'upstream/migration/migrator' }
 }
+
+# Logs and the verdict belong at the workspace root, where the artifact step
+# looks for them, and not wherever the binary happens to run.
+$root = $PWD
 
 Push-Location $buildDir
 go test -c -o "$PWD\probe.test.exe" $pkg 2>&1 | Tee-Object -FilePath "$PWD\build.log"
 if ($LASTEXITCODE -ne 0) {
   Pop-Location
-  "refused: could not build $pkg" | Out-File verdict.txt
+  "refused: could not build $pkg" | Out-File (Join-Path $root 'verdict.txt')
   Write-Host "::error::could not build $pkg"
   exit 1
 }
@@ -48,14 +57,28 @@ Pop-Location
 # reported as that rather than as a strange first iteration. Every abort this
 # repository is chasing went unexplained because something reported without
 # running; the probe should not join them.
-& $bin @testArgs 2>&1 | Tee-Object -FilePath 'smoke.log' | Out-Null
-if (-not (Select-String -Path 'smoke.log' -Pattern '^(PASS|ok|FAIL|---)' -Quiet)) {
-  "refused: the test binary produced no test result when invoked" | Out-File verdict.txt
+$smoke = Join-Path $root 'smoke.log'
+Push-Location $runDir
+& $bin @testArgs 2>&1 | Tee-Object -FilePath $smoke | Out-Null
+$smokeStatus = $LASTEXITCODE
+Pop-Location
+if (-not (Select-String -Path $smoke -Pattern '^(PASS|ok|FAIL|---)' -Quiet)) {
+  "refused: the test binary produced no test result when invoked" | Out-File (Join-Path $root 'verdict.txt')
   Write-Host "::error::the test binary produced no test result; see smoke.log"
-  Get-Content 'smoke.log' -Tail 20
+  Get-Content $smoke -Tail 20
   exit 1
 }
-Remove-Item 'smoke.log' -ErrorAction SilentlyContinue
+# An arm has to be able to pass at all. A control that fails every iteration for
+# reasons of its own can never be the positive control it exists to be, and the
+# failure would be indistinguishable from the one being hunted only by reading
+# each log.
+if ($smokeStatus -ne 0) {
+  "refused: the arm does not pass cleanly even once (exit $smokeStatus)" | Out-File (Join-Path $root 'verdict.txt')
+  Write-Host "::error::the arm does not pass cleanly even once; see smoke.log"
+  Select-String -Path $smoke -Pattern '^(--- FAIL|FAIL)' | Select-Object -First 10 | ForEach-Object { $_.Line }
+  exit 1
+}
+Remove-Item $smoke -ErrorAction SilentlyContinue
 
 Write-Host "probing $Kind ($pkg) for $iterations iterations, GOGC=$env:GOGC"
 
@@ -63,13 +86,15 @@ $ran = 0
 $signatures = 'PTAH-2365 REPRODUCED|LIVE OBJECT COLLECTED|SLOG HANDLER WORD CHANGED|found pointer to free object|marked free object|unexpected fault address|Exception 0xc0000005|fatal error:'
 
 for ($i = 1; $i -le $iterations; $i++) {
-  $log = "probe-$i.log"
+  $log = Join-Path $root "probe-$i.log"
+  Push-Location $runDir
   & $bin @testArgs 2>&1 | Tee-Object -FilePath $log | Out-Null
   $status = $LASTEXITCODE
+  Pop-Location
   $ran++
 
   if (Select-String -Path $log -Pattern $signatures -Quiet) {
-    "REPRODUCED on iteration $i of $iterations (exit $status)" | Out-File verdict.txt
+    "REPRODUCED on iteration $i of $iterations (exit $status)" | Out-File (Join-Path $root 'verdict.txt')
     Write-Host "::error::$Kind reproduced on iteration $i; the artifact holds the full output"
     Get-Content $log -Tail 80
     exit 1
@@ -77,13 +102,13 @@ for ($i = 1; $i -le $iterations; $i++) {
 
   # A clean iteration has to look like one.
   if (-not (Select-String -Path $log -Pattern '^(PASS|ok|FAIL|---)' -Quiet)) {
-    "refused: iteration $i produced no test result (exit $status)" | Out-File verdict.txt
+    "refused: iteration $i produced no test result (exit $status)" | Out-File (Join-Path $root 'verdict.txt')
     Write-Host "::error::iteration $i produced no test result"
     Get-Content $log -Tail 40
     exit 1
   }
   if ($status -ne 0) {
-    "suspect: iteration $i exited $status with a test result but no known signature" | Out-File verdict.txt
+    "suspect: iteration $i exited $status with a test result but no known signature" | Out-File (Join-Path $root 'verdict.txt')
     Write-Host "::error::iteration $i exited $status unexpectedly"
     Get-Content $log -Tail 40
     exit 1
@@ -93,9 +118,9 @@ for ($i = 1; $i -le $iterations; $i++) {
 }
 
 if ($ran -ne $iterations) {
-  "refused: ran $ran iterations of $iterations" | Out-File verdict.txt
+  "refused: ran $ran iterations of $iterations" | Out-File (Join-Path $root 'verdict.txt')
   Write-Host "::error::ran $ran iterations of $iterations"
   exit 1
 }
-"not reproduced in $ran iterations" | Out-File verdict.txt
+"not reproduced in $ran iterations" | Out-File (Join-Path $root 'verdict.txt')
 Write-Host "$Kind not reproduced in $ran iterations"
