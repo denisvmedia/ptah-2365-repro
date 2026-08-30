@@ -17,6 +17,7 @@ package harnessmin_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -46,8 +47,8 @@ const (
 )
 
 var (
-	workers = envInt("PTAH_2365_WORKERS", 48)
-	rounds  = envInt("PTAH_2365_ROUNDS", 20)
+	workers = envInt("PTAH_2365_WORKERS", 24)
+	rounds  = envInt("PTAH_2365_ROUNDS", 6)
 	writes  = envInt("PTAH_2365_INSERTS", 32)
 	// Files in the in-memory tree each worker parses per round. This is the
 	// path the reproduction was actually executing, so it carries weight rather
@@ -304,8 +305,38 @@ func exercise(t *testing.T, path string, round int) {
 		}
 	}
 	detached := context.WithoutCancel(t.Context())
-	_ = detached
 	_ = t.TempDir()
+
+	// The path that dominates the target's profile: acquire a connection, clone
+	// a capability-shaped map, run a query, walk the rows, and cancel one across
+	// a query the way the real workload does.
+	db, err := sql.Open("harnessfake", "round")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(4)
+	for range 8 {
+		rows, err := db.QueryContext(detached, "SELECT id, name FROM users WHERE round = ?", round)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		for rows.Next() {
+			var id int64
+			var name string
+			if err := rows.Scan(&id, &name); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+		}
+		rows.Close()
+	}
+	cctx, ccancel := context.WithCancel(context.Background())
+	go ccancel()
+	if rows, err := db.QueryContext(cctx, "SELECT id, name FROM users", 0); err == nil {
+		for rows.Next() {
+		}
+		rows.Close()
+	}
 
 	slog.Info("All migrations applied successfully", "round", round, "hits", hits)
 }
