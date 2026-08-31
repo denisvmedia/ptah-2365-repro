@@ -33,6 +33,6 @@ go build -trimpath -buildvcs=false -o repro.exe .
 the direct tail witness rather than the GC report.
 
 [CL 824724 patch set 1]: https://go-review.googlesource.com/c/go/+/824724/1
-[confirmed comparison]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33399605201/job/99514151587
+[confirmed comparison]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33403553197/job/99525466135
 [golang/go#81238]: https://github.com/golang/go/issues/81238
 [golang/go#80799]: https://github.com/golang/go/issues/80799
