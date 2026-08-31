@@ -2,7 +2,7 @@ name: reproduce
 
 on:
   push:
-    branches: [main, codex/2365-minimal-reproducer]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

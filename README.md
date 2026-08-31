@@ -27,10 +27,12 @@ object` from `runtime.(*mspan).reportZombies`.
 
 The program and workflow use stock Go. [golang/go#80799] only makes the fatal
 report reread cleared mark bits; it is not applied here. A [paired diagnostic
-run] showed the same abort with stock Go and with the report-only repair.
+run] showed the same abort with stock Go and with the report-only repair. The
+cleaned reproducer has a [confirmed standalone run].
 
 The module uses only the standard library. It contains no Ptah source,
 dependency, database, filesystem/process workload, or test harness.
 
 [golang/go#80799]: https://github.com/golang/go/issues/80799
 [paired diagnostic run]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33350325788
+[confirmed standalone run]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33351220157
