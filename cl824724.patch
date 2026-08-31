@@ -1,0 +1,14 @@
+diff --git a/src/runtime/signal_windows.go b/src/runtime/signal_windows.go
+index 40547b8113f..3423a660b5b 100644
+--- a/src/runtime/signal_windows.go
++++ b/src/runtime/signal_windows.go
+@@ -8,0 +9 @@ import (
++	"internal/runtime/sys"
+@@ -135,0 +137,7 @@ func sigtrampgo(ep *windows.ExceptionPointers, kind int) int32 {
++	// Windows delivers exceptions on the faulting goroutine's own stack. If the
++	// OS wrote past the bottom of that stack, the neighboring goroutine's stack
++	// is already corrupted, so crash now instead of running on bad memory.
++	if gp != gp.m.g0 && gp.stack.lo != 0 && sys.GetCallerSP() < gp.stack.lo {
++		throw("exception dispatched below goroutine stack bottom")
++	}
++

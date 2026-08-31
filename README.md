@@ -1,12 +1,19 @@
 # Go 1.27 Windows exception-stack underflow reproducer
 
-This standalone program reproduces the `found pointer to free object` failure
-seen in Ptah. On affected Windows Server 2025/amd64 hosts, recovering a read
-access violation at address `0x118` writes below a 16 KiB goroutine stack into
-an adjacent size-class-16 heap span. The next GC detects corrupted mark bits.
+This program reproduces the `found pointer to free object` failure reported in
+[golang/go#81238]. On affected Windows Server 2025/amd64 Intel hosts,
+recovering a read access violation at address `0x118` writes below a 16 KiB
+goroutine stack into an adjacent size-class-16 heap span.
 
-Tested with Go 1.27.0 on GitHub-hosted `windows-latest` runners with Intel AMX
-XSTATE enabled. The runner pool is mixed, so a non-AMX attempt exits cleanly.
+The paired workflow builds stock Go 1.27.0 and exact [CL 824724 patch set 1]
+from the same toolchain on the same runner. In the [confirmed comparison], both
+binaries changed the adjacent span at `stack_lo+0x48` and `stack_lo+0x20`,
+then failed in `runtime.(*mspan).reportZombies`. The CL did not emit its new
+guard diagnostic.
+
+`REPRO_TAIL` records the corruption before the later GC report, independently
+of the reporting defect in [golang/go#80799]. A clean run on the mixed runner
+pool is inconclusive.
 
 ## Run
 
@@ -21,18 +28,11 @@ go build -trimpath -buildvcs=false -o repro.exe .
 .\repro.exe fault 2> fault.log
 ```
 
-`panic` is the negative control and exits 0 without changing the adjacent page.
-On an affected host, `fault` exits 2 with `fatal error: found pointer to free
-object` from `runtime.(*mspan).reportZombies`.
+`panic` is the negative control. The GitHub workflow applies
+[`cl824724.patch`](cl824724.patch) through `go build -overlay` and classifies
+the direct tail witness rather than the GC report.
 
-The program and workflow use stock Go. [golang/go#80799] only makes the fatal
-report reread cleared mark bits; it is not applied here. A [paired diagnostic
-run] showed the same abort with stock Go and with the report-only repair. The
-cleaned reproducer has a [confirmed standalone run].
-
-The module uses only the standard library. It contains no Ptah source,
-dependency, database, filesystem/process workload, or test harness.
-
+[CL 824724 patch set 1]: https://go-review.googlesource.com/c/go/+/824724/1
+[confirmed comparison]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33399605201/job/99514151587
+[golang/go#81238]: https://github.com/golang/go/issues/81238
 [golang/go#80799]: https://github.com/golang/go/issues/80799
-[paired diagnostic run]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33350325788
-[confirmed standalone run]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33351220157

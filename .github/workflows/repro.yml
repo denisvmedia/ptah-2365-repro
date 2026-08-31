@@ -24,11 +24,11 @@ env:
 jobs:
   reproduce:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3, 4]
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -37,7 +37,7 @@ jobs:
         with:
           go-version: 1.27.0
           cache: false
-      - name: Build and run
+      - name: Build stock and CL 824724 PS1
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
@@ -46,105 +46,149 @@ jobs:
 
           & go env | Set-Content go-env.txt
           if ($LASTEXITCODE -ne 0) { throw 'go env failed' }
-          & go build -trimpath -buildvcs=false -o repro.exe .
-          if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+          Get-CimInstance Win32_Processor |
+            Format-List Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors |
+            Out-String | Set-Content host.txt
 
-          function Invoke-Repro($mode) {
+          $goroot = (& go env GOROOT).Trim()
+          $stockSource = Join-Path $goroot 'src\runtime\signal_windows.go'
+          $patchedSource = Join-Path $PWD 'overlay-build\src\runtime\signal_windows.go'
+          New-Item -ItemType Directory -Force (Split-Path $patchedSource) | Out-Null
+          Copy-Item $stockSource $patchedSource
+
+          $patch = Join-Path $env:RUNNER_TEMP 'cl824724.patch'
+          $patchText = [IO.File]::ReadAllText("$PWD\cl824724.patch").Replace("`r`n", "`n")
+          [IO.File]::WriteAllText($patch, $patchText, [Text.UTF8Encoding]::new($false))
+          & git apply --unidiff-zero --directory=overlay-build $patch
+          if ($LASTEXITCODE -ne 0) { throw 'patch failed' }
+
+          $stockHash = (& git hash-object $stockSource).Trim()
+          $patchedHash = (& git hash-object $patchedSource).Trim()
+          if ($stockHash -ne '40547b8113fffb5a27aa9a2e02af5efebd6090f2' -or
+              $patchedHash -ne '3423a660b5b5b112993cd64d1ab75a0c12c363a5') {
+            throw "unexpected runtime sources: stock=$stockHash patched=$patchedHash"
+          }
+
+          $replace = @{}
+          $replace[[IO.Path]::GetFullPath($stockSource)] = [IO.Path]::GetFullPath($patchedSource)
+          $overlay = [IO.Path]::GetFullPath("$PWD\overlay.json")
+          $json = @{Replace = $replace} | ConvertTo-Json -Depth 3 -Compress
+          [IO.File]::WriteAllText($overlay, $json, [Text.UTF8Encoding]::new($false))
+
+          $env:GOCACHE = Join-Path $env:RUNNER_TEMP 'stock-cache'
+          & go build -a -trimpath -buildvcs=false -o stock.exe .
+          if ($LASTEXITCODE -ne 0) { throw 'stock build failed' }
+          $env:GOCACHE = Join-Path $env:RUNNER_TEMP 'patched-cache'
+          & go build -a "-overlay=$overlay" -trimpath -buildvcs=false -o patched.exe .
+          if ($LASTEXITCODE -ne 0) { throw 'patched build failed' }
+
+          $marker = 'exception dispatched below goroutine stack bottom'
+          $stockText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes("$PWD\stock.exe"))
+          $patchedText = [Text.Encoding]::Latin1.GetString([IO.File]::ReadAllBytes("$PWD\patched.exe"))
+          if ($stockText.Contains($marker) -or -not $patchedText.Contains($marker)) {
+            throw 'overlay provenance failed'
+          }
+          @(
+            'CL_REVISION=810d839bced2e7806a4b54794a0793a781905373'
+            "STOCK_SOURCE_GIT_HASH=$stockHash"
+            "PATCHED_SOURCE_GIT_HASH=$patchedHash"
+            'STOCK_MARKER=False'
+            'PATCHED_MARKER=True'
+          ) | Set-Content provenance.txt
+
+      - name: Run paired comparison
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandArgumentPassing = 'Standard'
+
+          function Invoke-Repro($binary, $mode, $prefix) {
             $ErrorActionPreference = 'Continue'
-            & .\repro.exe $mode 2> "$mode.log"
+            & ".\$binary" $mode 2> "$prefix.log"
             $code = $LASTEXITCODE
             $ErrorActionPreference = 'Stop'
-            $code | Set-Content "$mode.exit"
+            $code | Set-Content "$prefix.exit"
           }
 
-          function Test-Clean($text, $code) {
-            $tail = [regex]::Match(
-              $text,
-              'REPRO_TAIL before=([0-9a-f]{64}) after=([0-9a-f]{64})'
-            )
-            return $code -eq '0' -and
-              $text -match 'REPRO_RESULT clean' -and
-              $tail.Success -and
-              $tail.Groups[1].Value -eq $tail.Groups[2].Value
-          }
-
-          function Test-Exact($text, $code) {
+          function Get-State($prefix, $allowGuard) {
+            $code = (Get-Content "$prefix.exit" -Raw).Trim()
+            $text = Get-Content "$prefix.log" -Raw
             $pair = [regex]::Match($text, 'REPRO_PAIR span=([0-9]+) stack_lo=([0-9]+)')
-            $tail = [regex]::Match(
-              $text,
-              'REPRO_TAIL before=([0-9a-f]{64}) after=([0-9a-f]{64})'
-            )
-            $header = [regex]::Matches(
-              $text,
-              '(?m)^runtime: marked free object in span 0x[0-9a-f]+, elemsize=16 .*$'
-            )
-            $fatal = [regex]::Matches(
-              $text,
-              '(?m)^fatal error: found pointer to free object\r?$'
-            )
-            $stack = [regex]::Matches(
-              $text,
-              '(?m)^runtime\.\(\*mspan\)\.reportZombies\(.*$'
-            )
-            if ($code -ne '2' -or -not $pair.Success -or -not $tail.Success -or
-                $header.Count -ne 1 -or $fatal.Count -ne 1 -or $stack.Count -ne 1 -or
-                $tail.Index -ge $header[0].Index -or $header[0].Index -ge $fatal[0].Index) {
-              return $false
-            }
-
+            if (-not $pair.Success) { return 'REFUSED' }
             $span = [UInt64]$pair.Groups[1].Value
             $stackLo = [UInt64]$pair.Groups[2].Value
-            $before = $tail.Groups[1].Value
-            $after = $tail.Groups[2].Value
-            if ($stackLo -ne $span + 8192 -or
-                $before -ne (('0' * 62) + '04') -or $after -eq $before) {
-              return $false
-            }
-            $bytes = [Convert]::FromHexString($after)
-            if ([BitConverter]::ToUInt64($bytes, 8) -ne $stackLo + 0x48 -or
-                [BitConverter]::ToUInt64($bytes, 24) -ne $stackLo + 0x20) {
-              return $false
-            }
+            if ($stackLo -ne $span + 8192) { return 'REFUSED' }
 
-            $rows = [regex]::Matches(
+            $tail = [regex]::Match(
               $text,
-              '(?m)^0x([0-9a-f]+) (?:free|alloc)\s+(?:marked|unmarked)(?:\s+zombie)?\r?$'
+              'REPRO_TAIL before=([0-9a-f]{64}) after=([0-9a-f]{64})'
             )
-            if ($rows.Count -ne 496) { return $false }
-            for ($index = 0; $index -lt $rows.Count; $index++) {
-              $address = [Convert]::ToUInt64($rows[$index].Groups[1].Value, 16)
-              if ($address -ne $span + 16 * $index) { return $false }
+            $guard = [regex]::Matches(
+              $text,
+              '(?m)^fatal error: exception dispatched below goroutine stack bottom\r?$'
+            )
+            if ($allowGuard -and $code -eq '2' -and $text -notmatch 'REPRO_TAIL' -and
+                $guard.Count -eq 1 -and $text -notmatch 'REPRO_RESULT' -and
+                $text -notmatch 'reportZombies|found pointer to free object') {
+              return 'GUARD'
             }
-            return $true
+            if (-not $tail.Success -or
+                $tail.Groups[1].Value -ne (('0' * 62) + '04')) {
+              return 'REFUSED'
+            }
+            if ($code -eq '0' -and
+                $tail.Groups[1].Value -eq $tail.Groups[2].Value -and
+                $text -match 'REPRO_RESULT clean') {
+              return 'CLEAN'
+            }
+
+            $bytes = [Convert]::FromHexString($tail.Groups[2].Value)
+            if ($code -eq '2' -and
+                $tail.Groups[1].Value -ne $tail.Groups[2].Value -and
+                [BitConverter]::ToUInt64($bytes, 8) -eq $stackLo + 0x48 -and
+                [BitConverter]::ToUInt64($bytes, 24) -eq $stackLo + 0x20) {
+              return 'EXACT'
+            }
+            return 'REFUSED'
           }
 
-          Invoke-Repro panic
-          Invoke-Repro fault
-          $panicCode = (Get-Content panic.exit -Raw).Trim()
-          $panicText = Get-Content panic.log -Raw
-          $faultCode = (Get-Content fault.exit -Raw).Trim()
-          $faultText = Get-Content fault.log -Raw
+          Invoke-Repro stock.exe panic stock-panic
+          Invoke-Repro patched.exe panic patched-panic
+          Invoke-Repro stock.exe fault stock-fault
+          Invoke-Repro patched.exe fault patched-fault
 
-          if (-not (Test-Clean $panicText $panicCode)) {
-            'REFUSED panic control' | Set-Content verdict.txt
+          if ((Get-State stock-panic $false) -ne 'CLEAN' -or
+              (Get-State patched-panic $false) -ne 'CLEAN') {
+            'REFUSED panic control' | Tee-Object -FilePath verdict.txt
             exit 1
           }
-          if (Test-Exact $faultText $faultCode) {
-            'EXACT' | Set-Content verdict.txt
-            exit 1
+          $stock = Get-State stock-fault $false
+          $patched = Get-State patched-fault $true
+          $result = if ($patched -eq 'EXACT') {
+            'MISSED_GUARD'
+          } elseif ($stock -eq 'REFUSED' -or $patched -eq 'REFUSED') {
+            'REFUSED'
+          } elseif ($stock -eq 'EXACT' -and $patched -eq 'GUARD') {
+            'VALIDATED_CONTAINMENT'
+          } elseif ($stock -eq 'EXACT' -and $patched -eq 'CLEAN') {
+            'INCONCLUSIVE_PATCHED_CLEAN'
+          } elseif ($stock -eq 'CLEAN' -and $patched -eq 'CLEAN') {
+            'NO_BASELINE'
+          } else {
+            'INCONCLUSIVE'
           }
-          if (Test-Clean $faultText $faultCode) {
-            'CLEAN' | Set-Content verdict.txt
-            exit 0
-          }
-          "REFUSED fault=$faultCode" | Set-Content verdict.txt
+          "$result STOCK=$stock PATCHED=$patched" | Tee-Object -FilePath verdict.txt
           exit 1
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: repro-${{ matrix.attempt }}
           path: |
             go-env.txt
+            host.txt
+            provenance.txt
             *.log
             *.exit
             verdict.txt
