@@ -44,6 +44,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandArgumentPassing = 'Standard'
 
+          & go env | Set-Content go-env.txt
+          if ($LASTEXITCODE -ne 0) { throw 'go env failed' }
           & go build -trimpath -buildvcs=false -o repro.exe .
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 
@@ -142,6 +144,7 @@ jobs:
         with:
           name: repro-${{ matrix.attempt }}
           path: |
+            go-env.txt
             *.log
             *.exit
             verdict.txt
