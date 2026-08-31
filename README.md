@@ -1,21 +1,36 @@
-# ptah-2365-repro
+# Go 1.27 Windows exception-stack underflow reproducer
 
-Minimal GitHub-hosted Windows reproducer for the intermittent Go runtime
-corruption seen in Ptah.
+This standalone program reproduces the `found pointer to free object` failure
+seen in Ptah. On affected Windows Server 2025/amd64 hosts, recovering a read
+access violation at address `0x118` writes below a 16 KiB goroutine stack into
+an adjacent size-class-16 heap span. The next GC detects corrupted mark bits.
 
-Each of 40 jobs checks out [the failing Ptah commit][ptah], builds
-`./migration/migrator` once with Go 1.27.0, and runs that fresh test
-binary once from its package directory with `GOGC=1`.
+Tested with Go 1.27.0 on GitHub-hosted `windows-latest` runners with Intel AMX
+XSTATE enabled. The runner pool is mixed, so a non-AMX attempt exits cleanly.
 
-`repro.go` applies only the report repair from [golang/go#80799] and proves it
-with a deliberate zombie before measuring Ptah. It does not change the fault.
+## Run
 
-Captured data below `stack.lo` decodes as `runtime.systemstack` and
-`runtime.sigtrampgo` frame data, with a low-water mark at `stack.lo-0x20`.
+```powershell
+$env:GODEBUG = 'adaptivestackstart=0'
+$env:GOGC = 'off'
+$env:GOMEMLIMIT = 'off'
+$env:GOTRACEBACK = 'system'
+go build -trimpath -buildvcs=false -o repro.exe .
 
-Run **reproduce Windows runtime corruption** from the Actions tab.
-`CORRUPTION` jobs fail by design; anything other than recognized corruption
-or one clean `PASS` is `REFUSED`.
+.\repro.exe panic 2> panic.log
+.\repro.exe fault 2> fault.log
+```
+
+`panic` is the negative control and exits 0 without changing the adjacent page.
+On an affected host, `fault` exits 2 with `fatal error: found pointer to free
+object` from `runtime.(*mspan).reportZombies`.
+
+The program and workflow use stock Go. [golang/go#80799] only makes the fatal
+report reread cleared mark bits; it is not applied here. A [paired diagnostic
+run] showed the same abort with stock Go and with the report-only repair.
+
+The module uses only the standard library. It contains no Ptah source,
+dependency, database, filesystem/process workload, or test harness.
 
 [golang/go#80799]: https://github.com/golang/go/issues/80799
-[ptah]: https://github.com/stokaro/ptah/commit/9278f8566c88c3bf949bd3c5cd22fad1d37006b4
+[paired diagnostic run]: https://github.com/denisvmedia/ptah-2365-repro/actions/runs/33350325788

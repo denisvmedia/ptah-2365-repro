@@ -1,120 +1,148 @@
-# Stock Go runtime with only the golang/go#80799 crash-report repair.
-name: reproduce Windows runtime corruption
+name: reproduce
 
 on:
+  push:
+    branches: [main, codex/2365-minimal-reproducer]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
-  GOTOOLCHAIN: local
+  CGO_ENABLED: '0'
+  GOAMD64: v1
   GOENV: 'off'
   GOEXPERIMENT: ''
   GOFLAGS: ''
-  GODEBUG: ''
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  GODEBUG: adaptivestackstart=0
+  GOGC: 'off'
+  GOMEMLIMIT: 'off'
+  GOTRACEBACK: system
 
 jobs:
-  smoke:
-    name: ${{ matrix.shard }}
+  reproduce:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        shard: ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35', '36', '37', '38', '39', '40']
-
+        attempt: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-
-      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
-          repository: stokaro/ptah
-          ref: 9278f8566c88c3bf949bd3c5cd22fad1d37006b4
-          path: upstream
-          persist-credentials: false
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.0'
+          go-version: 1.27.0
           cache: false
-
-      - name: Build and run once
+      - name: Build and run
         shell: pwsh
         run: |
           Set-StrictMode -Version Latest
-          $ErrorActionPreference = 'Continue'
+          $ErrorActionPreference = 'Stop'
           $PSNativeCommandArgumentPassing = 'Standard'
-          $artifact = Join-Path $env:GITHUB_WORKSPACE 'artifact'
-          New-Item -ItemType Directory -Force -Path $artifact -ErrorAction Stop | Out-Null
-          'REFUSED: measurement did not complete' | Set-Content "$artifact\verdict.txt"
 
-          $overlayDir = Join-Path $env:RUNNER_TEMP "ptah-2365-${{ matrix.shard }}"
-          $patchArgs = @('./repro.go', '-out', $overlayDir)
-          $patchOutput = @(& go run @patchArgs 2>&1)
-          $patchStatus = $LASTEXITCODE
-          if ($patchStatus -ne 0) {
-            $patchOutput | ForEach-Object { Write-Host $_ }
-            throw "overlay generation failed with exit $patchStatus"
-          }
-          $overlayPaths = @($patchOutput | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ -match 'overlay\.json$' })
-          if ($overlayPaths.Count -ne 1) {
-            throw "overlay generator returned $($overlayPaths.Count) paths"
-          }
-          $overlay = [IO.Path]::GetFullPath($overlayPaths[0])
+          & go build -trimpath -buildvcs=false -o repro.exe .
+          if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 
-          $proofOutput = @(& go run "-overlay=$overlay" ./repro.go -zombie 2>&1)
-          $proofStatus = $LASTEXITCODE
-          $proofText = $proofOutput -join [Environment]::NewLine
-          if ($proofStatus -eq 0 -or
-              $proofText -notmatch 'fatal error: found pointer to free object' -or
-              $proofText -notmatch '(?m)^0x[0-9a-f]+ .*zombie') {
-            $proofOutput | ForEach-Object { Write-Host $_ }
-            throw 'golang/go#80799 report repair was not proven'
+          function Invoke-Repro($mode) {
+            $ErrorActionPreference = 'Continue'
+            & .\repro.exe $mode 2> "$mode.log"
+            $code = $LASTEXITCODE
+            $ErrorActionPreference = 'Stop'
+            $code | Set-Content "$mode.exit"
           }
 
-          $binary = [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP "ptah-${{ matrix.shard }}.test.exe"))
-          $buildArgs = @('test', '-c', "-overlay=$overlay", '-o', $binary, './migration/migrator')
-          Push-Location upstream
-          $buildOutput = @(& go @buildArgs 2>&1)
-          $buildStatus = $LASTEXITCODE
-          Pop-Location
-          if ($buildStatus -ne 0 -or -not (Test-Path -LiteralPath $binary -PathType Leaf)) {
-            $buildOutput | ForEach-Object { Write-Host $_ }
-            throw "Ptah build failed with exit $buildStatus"
+          function Test-Clean($text, $code) {
+            $tail = [regex]::Match(
+              $text,
+              'REPRO_TAIL before=([0-9a-f]{64}) after=([0-9a-f]{64})'
+            )
+            return $code -eq '0' -and
+              $text -match 'REPRO_RESULT clean' -and
+              $tail.Success -and
+              $tail.Groups[1].Value -eq $tail.Groups[2].Value
           }
 
-          $env:GOGC = '1'
-          $testArgs = @('-test.count=1', '-test.timeout=25m')
-          Push-Location 'upstream\migration\migrator'
-          $smokeOutput = @(& $binary @testArgs 2>&1)
-          $smokeStatus = $LASTEXITCODE
-          Pop-Location
-          $smokeText = $smokeOutput -join [Environment]::NewLine
-          $smokeOutput | Set-Content "$artifact\smoke.log"
+          function Test-Exact($text, $code) {
+            $pair = [regex]::Match($text, 'REPRO_PAIR span=([0-9]+) stack_lo=([0-9]+)')
+            $tail = [regex]::Match(
+              $text,
+              'REPRO_TAIL before=([0-9a-f]{64}) after=([0-9a-f]{64})'
+            )
+            $header = [regex]::Matches(
+              $text,
+              '(?m)^runtime: marked free object in span 0x[0-9a-f]+, elemsize=16 .*$'
+            )
+            $fatal = [regex]::Matches(
+              $text,
+              '(?m)^fatal error: found pointer to free object\r?$'
+            )
+            $stack = [regex]::Matches(
+              $text,
+              '(?m)^runtime\.\(\*mspan\)\.reportZombies\(.*$'
+            )
+            if ($code -ne '2' -or -not $pair.Success -or -not $tail.Success -or
+                $header.Count -ne 1 -or $fatal.Count -ne 1 -or $stack.Count -ne 1 -or
+                $tail.Index -ge $header[0].Index -or $header[0].Index -ge $fatal[0].Index) {
+              return $false
+            }
 
-          $corruption = 'found pointer to free object|marked free object|found bad pointer in Go heap|found pointer to unallocated span|marks don''t match scans for span with pointer|unexpected fault address|Exception 0xc0000005|badPointer|invalid pointer found on stack'
-          if ($smokeText -match $corruption) {
-            "CORRUPTION: $($Matches[0])" | Set-Content "$artifact\verdict.txt"
-            Write-Host "::error::memory corruption reproduced: $($Matches[0])"
+            $span = [UInt64]$pair.Groups[1].Value
+            $stackLo = [UInt64]$pair.Groups[2].Value
+            $before = $tail.Groups[1].Value
+            $after = $tail.Groups[2].Value
+            if ($stackLo -ne $span + 8192 -or
+                $before -ne (('0' * 62) + '04') -or $after -eq $before) {
+              return $false
+            }
+            $bytes = [Convert]::FromHexString($after)
+            if ([BitConverter]::ToUInt64($bytes, 8) -ne $stackLo + 0x48 -or
+                [BitConverter]::ToUInt64($bytes, 24) -ne $stackLo + 0x20) {
+              return $false
+            }
+
+            $rows = [regex]::Matches(
+              $text,
+              '(?m)^0x([0-9a-f]+) (?:free|alloc)\s+(?:marked|unmarked)(?:\s+zombie)?\r?$'
+            )
+            if ($rows.Count -ne 496) { return $false }
+            for ($index = 0; $index -lt $rows.Count; $index++) {
+              $address = [Convert]::ToUInt64($rows[$index].Groups[1].Value, 16)
+              if ($address -ne $span + 16 * $index) { return $false }
+            }
+            return $true
+          }
+
+          Invoke-Repro panic
+          Invoke-Repro fault
+          $panicCode = (Get-Content panic.exit -Raw).Trim()
+          $panicText = Get-Content panic.log -Raw
+          $faultCode = (Get-Content fault.exit -Raw).Trim()
+          $faultText = Get-Content fault.log -Raw
+
+          if (-not (Test-Clean $panicText $panicCode)) {
+            'REFUSED panic control' | Set-Content verdict.txt
             exit 1
           }
-          $passes = ([regex]::Matches($smokeText, '(?m)^PASS\r?$')).Count
-          $failures = ([regex]::Matches($smokeText, '(?m)^(--- FAIL|FAIL)\b')).Count
-          if ($smokeStatus -ne 0 -or $passes -ne 1 -or $failures -ne 0) {
-            "REFUSED: exit=$smokeStatus PASS=$passes FAIL=$failures" | Set-Content "$artifact\verdict.txt"
-            Write-Host '::error::smoke result was neither clean nor recognized corruption'
+          if (Test-Exact $faultText $faultCode) {
+            'EXACT' | Set-Content verdict.txt
             exit 1
           }
-          'PASS' | Set-Content "$artifact\verdict.txt"
-
-      - name: Upload evidence
+          if (Test-Clean $faultText $faultCode) {
+            'CLEAN' | Set-Content verdict.txt
+            exit 0
+          }
+          "REFUSED fault=$faultCode" | Set-Content verdict.txt
+          exit 1
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v7
         with:
-          name: ptah-${{ matrix.shard }}
-          path: artifact
+          name: repro-${{ matrix.attempt }}
+          path: |
+            *.log
+            *.exit
+            verdict.txt
           if-no-files-found: error
-          retention-days: 30
